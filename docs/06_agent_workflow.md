@@ -5,10 +5,31 @@ This file is for future coding agents.
 ## First Five Minutes
 
 1. Read `README.md`.
-2. Read `docs/00_problem_decomposition.md`.
-3. Run `scripts/check_env.sh`.
-4. Check `git status --short`.
-5. If references are missing, run `scripts/fetch_references.sh`.
+2. Read `docs/00_problem_decomposition.md` and `docs/08_load_bearing_hardware_truths.md`.
+3. Read the gate for the milestone you are on in `docs/05_milestones.md`.
+4. Run `scripts/check_env.sh`.
+5. Check `git status --short`. If references are missing, run `scripts/fetch_references.sh`.
+
+## Don't Claim, Measure
+
+This is the first rule, because it is the one an agent breaks most.
+
+```text
+- A feature is not "working" and a milestone is not "passed" until the numeric
+  gate is shown by the profile overlay / CI, not asserted in prose.
+- Quote the measurement (fps, peak sprites/line, SCB words, RAM HWM) in the PR.
+- If you did not run it, say so. A skipped step is reported, never implied done.
+- Any hardware number you state must trace to references/neogeodev/md/, not memory.
+```
+
+## Make Your Work Testable Without Hardware
+
+```text
+- Keep render/game DECISIONS in host-compilable code that emits ng_sprite_cmd_t[];
+  keep VRAM pokes in a thin target-only layer (see docs/10 layer 5).
+- Add/extend a golden test when you add an encoder or a renderer decision.
+- Run the determinism replay after touching game logic.
+```
 
 ## Default Bias
 

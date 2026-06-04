@@ -3,21 +3,29 @@
 Purpose:
 
 ```text
-Prove free movement through one Doom-like room using projected wall chunks.
+Walk freely through one hand-authored Doom-shaped room rendered as scaled
+sprites: BSP project -> chunk subdivide -> emit walls, with a working door.
 ```
 
-Initial checklist:
+The hardcoded deliverables, gate (12 fps floor, <=84 sprites/line, <=1,664 SCB
+words/vblank, <=56 KiB RAM), and kill criteria are in
+[docs/05_milestones.md](../../docs/05_milestones.md) under **M1**. That file is
+the authority.
+
+See [docs/03_renderer_spec.md](../../docs/03_renderer_spec.md) for the frame flow,
+SCB caching, and the fixed-horizon floor/ceiling technique.
+
+Work log:
 
 ```text
-fixed-point player movement
-hardcoded vertices/linedefs/sectors
-project wall endpoints
-emit middle wall chunks
-add one upper/lower wall case
-add one moving door-height extent
-flat floor and ceiling
-scanline budget report
+- fixed-point player move / rotate / strafe + linedef collision
+- hand-authored vertices/linedefs/sectors/segs/subsectors (compiled-in, static)
+- project wall endpoints; subdivide into coarse chunks; pick cards + palettes
+- emit middle wall + at least one upper/lower case
+- door = dynamic sector height -> sprite Y-extent + role updates
+- fixed-horizon floor/ceiling (v1 single backdrop color OK)
+- SCB caching: only rewrite SCB1 for chunks whose card id changed
+- per-frame profile overlay on the fix layer
 ```
 
-This experiment may use placeholder wall cards.
-
+This experiment may use placeholder wall cards. Record results in `RESULT.md`.

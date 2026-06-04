@@ -2,6 +2,8 @@
 
 The asset pipeline is a host-side bulk converter. The Neo Geo runtime should consume already-packed, already-budgeted banks.
 
+Concrete recipe (lump formats, ZDBSP, planar tile encoding, end-to-end commands): [13_wad_porting_guide.md](13_wad_porting_guide.md). Output spec: [04_asset_pipeline.md](04_asset_pipeline.md).
+
 ## Current Scaffold
 
 The first tool is `tools/wad2ng`.

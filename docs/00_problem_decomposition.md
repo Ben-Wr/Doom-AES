@@ -133,7 +133,7 @@ no floor texture sampling
 no ceiling texture sampling
 ```
 
-Because there is no pitch, the horizon is stable. Solid floor/ceiling can be effectively free through backdrop/fix-layer strategy. Scrolling sky or per-sector floor color is a later feature.
+Because there is no pitch, the horizon is stable. A single backdrop color is free; a two-band ceiling/floor split uses a timer interrupt at the horizon scanline (the fix layer draws ON TOP of sprites, so it cannot be the background — see [08](08_load_bearing_hardware_truths.md) section 5). Scrolling sky or per-sector floor color is a later feature.
 
 ### 6. Monsters And Objects
 

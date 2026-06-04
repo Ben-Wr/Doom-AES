@@ -25,14 +25,19 @@ Output:
 5. Clip segs against already-filled screen buckets.
 6. Split wall ranges into budgeted chunks, defaulting coarse.
 7. Select C-ROM wall cards and palettes.
-8. Emit upper/middle/lower wall sprite commands.
+8. Emit upper/middle/lower wall sprite commands into the command list.
 9. Project visible things.
 10. Sort or bucket things by depth.
 11. Emit thing billboard strips with distance LOD.
 12. Emit weapon/HUD/fix updates.
-13. Validate scanline, frame, shrink-only, and upload budgets.
-14. Write SCB/fix/palette updates.
+13. Assign SCB indices back-to-front (depth order IS index order).
+14. Validate scanline, frame, shrink-only, and upload budgets.
+15. Diff against last frame's SCB shadow: rewrite SCB1 tilemaps ONLY for slots
+    whose card id changed; always stream SCB2/3/4 control words.
+16. Push the diffed SCB/fix/palette writes during vblank (REG_VRAMMOD streaming).
 ```
+
+Steps 13, 15, 16 are not optional bookkeeping. Index order is the only depth mechanism the hardware has, and the SCB1 diff is what keeps the per-frame upload under the ~1,664-word vblank budget (see [08](08_load_bearing_hardware_truths.md) section 3).
 
 ## Wall Chunk Command
 
@@ -80,6 +85,31 @@ special tint
 
 Runtime does not sample C-ROM pixels.
 
+### What X-shrink does and does not do
+
+The horizontal texture *content* of a chunk comes entirely from the card you selected (its baked U slice). X-shrink is a 4-bit value that only sets the card's on-screen *width* (1..16 px) via a fixed decimation pattern — it cannot remap an arbitrary U range across the chunk. So:
+
+```text
+need a different U window  -> choose a different card (offline-baked U slice)
+need a narrower on-screen chunk (edge of wall, 8px chunk) -> lower X-shrink
+near wall, full 16px chunk  -> X-shrink = $F (full)
+```
+
+There are only 16 horizontal widths. Treat chunk width as quantized.
+
+### Vertical: window vs shrink
+
+A sprite has a tile-height "window" (size, 1..32) and a separate 8-bit Y-shrink that scales the graphics *inside* that window. Pick one convention and assert it:
+
+```text
+window (size in tiles) ~= ceil(projected_wall_px / 16)
+y_shrink               = scales the 512px card down to projected_wall_px
+guard                  = keep the card's bottom line transparent so the
+                         hardware "last-line repeat" smear is invisible
+```
+
+Vertical texture phase/pegging is quantized to the few precomputed phase variants. Expect minor swimming on moving doors/lifts; that is accepted.
+
 ## Chunk Width Rules
 
 Start with:
@@ -106,14 +136,21 @@ Doors, lifts, windows, and stairs all reduce to changing screen top/bottom plus 
 
 ## Floor And Ceiling
 
-Version 1 floor/ceiling is a fixed horizon split:
+No pitch means the horizon is fixed at screen center, so floor/ceiling is a background fill, not a renderer. It must sit *behind* the walls.
+
+The fix layer cannot do this — it always draws on top of sprites and would cover the walls. The correct path:
 
 ```text
-top half:    solid ceiling color or static sky color
-bottom half: solid floor color
+v1   single backdrop color (last color of palette bank) -> 0 sprites, 0 IRQ.
+     Recognizable enough to ship Milestone 1 with.
+v1.5 two-band split: a timer interrupt at the horizon scanline rewrites the
+     backdrop / shared palette entry during hblank. Ceiling color above,
+     floor color below. ~1 IRQ/frame, 0 sprites. Validate "snow"-free in M1.
+later per-sector floor color and scrolling sky -> region fills / extra raster
+     splits, or sprites in the top band only. Stretch goals, off in heavy scenes.
 ```
 
-No pitch means this can be stable and effectively free. Scrolling sky and per-sector floor color are later experiments.
+Do not build a full-width sprite backplane (20 sprites/line) for floor/ceiling. The timer-IRQ split is the intended technique.
 
 ## Thing Rendering
 
@@ -173,6 +210,29 @@ Budget degradation order:
 ```
 
 Never drop critical walls first. Never allow accidental scanline overflow.
+
+## Sprite Slots, Depth, And SCB Caching
+
+The 381 sprite slots are a pool. Draw order is the slot index — there is no Z value (see [08](08_load_bearing_hardware_truths.md) section 6). The renderer assigns indices back-to-front so nearer sprites overwrite farther ones, and so the hardware's >96/line eviction keeps the sprites that matter.
+
+A workable allocation:
+
+```text
+slots 0..N-1    wall chunks, ordered far -> near
+slots N..M-1    things, ordered far -> near, interleaved with walls by depth
+slots M..top    weapon (frontmost), then HUD sprites
+unused slots    parked off-screen / Y out of range, not deleted
+```
+
+SCB caching is the survival mechanism for the upload clock. Keep a host-side shadow of each slot's last-written `(card_id, palette, x, y, shrink)`:
+
+```text
+card_id unchanged  -> skip SCB1 entirely (64 words saved), write only SCB2/3/4 if moved
+card_id changed    -> rewrite that slot's SCB1 tilemap (<=64 words) + control words
+nothing changed    -> write nothing
+```
+
+Because the view changes little between frames, most wall slots keep their card; only edges and newly-revealed segs churn. That temporal coherence is what turns a 3,300-word worst case into a ~1,400-word typical frame.
 
 ## Upload Accounting
 

@@ -4,6 +4,8 @@ The port lives or dies in the PC-side compiler.
 
 The Neo Geo runtime should see compact, banked, already-decided data. It should not parse WADs, compose patches, choose palettes globally, or build nodes at runtime.
 
+This file is the spec for *what the compiler outputs*. For the concrete, lump-by-lump *how to port a WAD* recipe — including the Neo Geo planar tile encoding, palette reduction, fixed-point/BAM conventions, and the end-to-end command sequence — see [13_wad_porting_guide.md](13_wad_porting_guide.md). All multi-byte output must be **big-endian** (Doom is little-endian; the 68000 is big-endian).
+
 ## Inputs
 
 Accept:

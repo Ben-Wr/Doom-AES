@@ -4,23 +4,30 @@ These are the numbers and gates to keep in mind on every design decision. Re-che
 
 ## Hard Hardware Constraints
 
+All cross-checked against `references/neogeodev/md/`. Full derivations and the SCB/VRAM detail live in [08_load_bearing_hardware_truths.md](08_load_bearing_hardware_truths.md).
+
 ```text
-CPU:                    Motorola 68000 around 12 MHz
+CPU:                    68HC000 @ 12 MHz (+ Z80A @ 4 MHz for sound)
 Work RAM:               64 KiB
-Display:                320x224 visible target
+VRAM:                   68 KiB (64 lower + 4 upper); holds attributes/maps, NOT graphics
+Display:                320x224 visible, NTSC ~59.18 Hz
 Sprite tile:            16x16 px, 4 bpp, 128 bytes
 Sprite strip:           16 px wide, up to 32 tiles / 512 px tall
-Sprite shrink:          shrink only, no enlargement, ever
-Horizontal shrink:      still consumes one 16 px sprite entry
-Sprite scanline limit:  96 sprites
-Visible sprite limit:   about 381 sprites per frame
-Sprite address space:   20-bit tile id, about 128 MiB C-ROM graphics before graphics bank tricks
-Palettes:               256 sprite palettes, 16 entries each, color 0 transparent
-Fix layer:              suitable for text/HUD/status support
-VRAM access:            CPU-pushed through LSPC ports, timing-sensitive
-Occlusion:              sprite priority only, no Z-buffer or stencil
+Sprite shrink:          shrink only, never enlarge
+  vertical shrink:      8-bit (256 steps), $FF full
+  horizontal shrink:    4-bit (16 widths only), $F full, fixed decimation pattern
+Horizontal shrink note: still consumes one 16 px sprite entry (1..16px on-screen width)
+Sprite scanline limit:  96 sprites (hard); >96 dropped by SCB-index priority
+Visible sprite limit:   381 displayable per frame (448 VRAM slots)
+Sprite address space:   20-bit tile id, ~128 MiB C-ROM before graphics bank tricks
+Palettes:               2 banks of 256 x 16 (1 active); color 0 transparent; 3840 colors max
+Fix-layer palettes:     first 16 palettes only; fix ALWAYS draws on top of sprites
+Depth order:            SCB index order only (no Z, no priority field). Emit back-to-front.
+VRAM access:            via REG_VRAMADDR/RW/MOD ($3C0000-4); >=12 cycles/streamed word
+VBlank budget:          ~40 scanlines ~= 2.56 ms ~= 30,720 cycles ~= ~1,664 practical words
+Occlusion:              sprite priority only, no Z-buffer or stencil (strip-drop monsters)
 Alpha:                  color 0 transparency only, no blending
-Pitch:                  none in the design, fixed horizon
+Pitch:                  none in the design, fixed horizon at screen center
 ```
 
 ## Working Budgets
@@ -30,10 +37,12 @@ These are not hardware laws. They are project safety rails.
 ```text
 Viewport:                   304x160 or 320x160 first
 Wall chunk width:            16 px default, 8 px only where budget allows
-Centerline wall chunks:      target around 20-40 before stacking
+Centerline wall chunks:      target <= 40 (count scales with VISIBLE SEGS, not screen width;
+                             every wall, near or far, crosses the center line)
 Thing strips on centerline:  reserve 16-24
-Safety reserve:              8-12
+Safety reserve:              8-12 (keep peak <= 84 of the 96 hard limit)
 Visible sprite commands:     target <= 340, hard stop before 381
+SCB words / vblank:          <= ~1,664 practical (see vram_upload_budget.py); cache tilemaps
 RAM runtime target:          <= 56 KiB allocated, leave stack/scratch reserve
 Frame target:                10-15 fps ordinary rooms, lower in heavy scenes
 ```
@@ -128,15 +137,16 @@ palette writes
 fix-layer writes
 ```
 
-A 512 px wall-card sprite can imply up to 64 SCB1 tilemap/attribute words before SCB2/3/4 control words. That cost can dominate if every visible wall chunk changes tile assignment every frame.
+A 512 px wall-card sprite implies up to 64 SCB1 tilemap/attribute words before SCB2/3/4 control words. Rewriting every visible wall tilemap every frame overruns vblank by ~2x. The renderer must cache SCB1 tilemaps and rewrite them only when a sprite's card id changes; SCB2/3/4 (3 words/sprite) are rewritten every frame.
 
-Use:
+Use (the `--wall-card-change-frac` knob models the caching that makes this fit):
 
 ```sh
-scripts/vram_upload_budget.py --wall-sprites 20 --thing-sprites 24
+scripts/vram_upload_budget.py --wall-sprites 40 --thing-sprites 24 --wall-card-change-frac 0.25
+scripts/vram_upload_budget.py --wall-card-change-frac 1.0   # worst case: fast spin, every card changes
 ```
 
-The script is an estimator. Milestone 0B must replace estimates with measured writes in emulator/hardware.
+The script is an estimator. Milestone 0B must replace estimates with measured writes in emulator/hardware. The upload clock, not the 96/line limit, most likely sets the real frame rate.
 
 ### 6. CPU/Frame Budget
 
@@ -205,49 +215,10 @@ generated assets derived from commercial IWADs unless the distribution story is 
 
 ## Prototype Acceptance Gates
 
-### Milestone 0A Gate
+The hardcoded, numeric pass/fail gate for each milestone (and its kill criteria) lives in [05_milestones.md](05_milestones.md). That file is the authority; do not duplicate thresholds here. The one rule that outranks all gates:
 
 ```text
-Can place one or more maximum-size wall cards.
-Can update X/Y/shrink/palette.
-Can prove shrink-down-only display path.
-No scanline overflow.
-Frame/update counter visible.
-```
-
-### Milestone 0B Gate
-
-```text
-Can rewrite representative SCB1/2/3/4 data inside the chosen update window.
-Can measure words/frame.
-Can detect visible tearing/glitching.
-Can report max safe command mix.
-```
-
-### Milestone 1 Gate
-
-```text
-One Doom-like room.
-Free movement and rotation.
-At least one step or door-height change.
-Fixed horizon split floor/ceiling.
-Wall chunks under budget.
-Around 12 fps target in the simple room.
-```
-
-### Milestone 2 Gate
-
-```text
-E1M1 walls-only is recognizable.
-No monsters required.
-Budget manager can merge chunks under pressure.
-Worst-case-scene suite begins here.
-```
-
-### Milestone 3 Gate
-
-```text
-Weapon foreground sprites.
-At least zombieman, imp, barrel, pickup, projectile.
-Per-strip occlusion good enough for gameplay.
+A milestone is NOT passed until its gate is met IN A CYCLE-ACCURATE EMULATOR
+(MAME neogeo) with the per-frame profile overlay visible. Screenshots and
+host-side estimates are necessary but never sufficient.
 ```

@@ -15,17 +15,19 @@ Keep the tiny ROM-backed pseudo-framebuffer as a debug/fallback layer, not the m
 
 Read these in order:
 
-1. [Problem decomposition](docs/00_problem_decomposition.md)
-2. [Core principles](docs/01_core_principles.md)
-3. [Constraints and tests](docs/02_constraints_and_tests.md)
-4. [Renderer spec](docs/03_renderer_spec.md)
-5. [Asset pipeline](docs/04_asset_pipeline.md)
-6. [Milestones](docs/05_milestones.md)
-7. [Agent workflow](docs/06_agent_workflow.md)
-8. [Research index](docs/07_research_index.md)
-9. [Load-bearing hardware truths](docs/08_load_bearing_hardware_truths.md)
-10. [Asset conversion pipeline](docs/09_asset_conversion_pipeline.md)
+1. [Why it's possible — answering the video](docs/12_answering_the_video.md)
+2. [Problem decomposition](docs/00_problem_decomposition.md)
+3. [Load-bearing hardware truths](docs/08_load_bearing_hardware_truths.md) — the canonical, cross-checked fact sheet
+4. [Core principles](docs/01_core_principles.md)
+5. [Constraints and tests](docs/02_constraints_and_tests.md)
+6. [Renderer spec](docs/03_renderer_spec.md)
+7. [Milestones (hardcoded)](docs/05_milestones.md) — the gates that define "done"
+8. [Toolchain and build](docs/11_toolchain_and_build.md)
+9. [Asset pipeline](docs/04_asset_pipeline.md) and [conversion stages](docs/09_asset_conversion_pipeline.md)
+10. [WAD porting guide (concrete)](docs/13_wad_porting_guide.md)
 11. [Test harness and profiling](docs/10_test_harness_and_profiling.md)
+12. [Agent workflow](docs/06_agent_workflow.md)
+13. [Research index](docs/07_research_index.md)
 
 ## Workspace Layout
 
