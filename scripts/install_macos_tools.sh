@@ -6,9 +6,17 @@ if ! command -v brew >/dev/null 2>&1; then
   exit 1
 fi
 
-brew install m68k-elf-binutils m68k-elf-gcc sdcc
+brew tap dciabrin/ngdevkit
+brew install \
+  ngdevkit \
+  pkg-config \
+  autoconf \
+  automake \
+  zip \
+  imagemagick \
+  sox
 
-printf "\nOptional emulator install, large and slower:\n"
-printf "  brew install mame\n"
-printf "\nFor ngdevkit, see external/ngdevkit after running scripts/fetch_references.sh.\n"
-
+printf "\nOptional emulator installs, larger and slower:\n"
+printf "  brew install ngdevkit-gngeo mame\n"
+printf "\nAfter install, run:\n"
+printf "  scripts/check_env.sh\n"

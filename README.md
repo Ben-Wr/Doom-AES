@@ -52,6 +52,7 @@ This repo must never commit `DOOM.WAD`, `DOOM1.WAD`, BIOS files, MAME ROM sets, 
 ```sh
 scripts/check_env.sh
 scripts/setup_python_tools.sh
+scripts/run_host_tests.sh
 scripts/wad2ng_bulk_extract.sh
 scripts/fetch_references.sh
 scripts/card_atlas_budget.py
