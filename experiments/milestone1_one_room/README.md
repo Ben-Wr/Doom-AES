@@ -29,3 +29,14 @@ Work log:
 ```
 
 This experiment may use placeholder wall cards. Record results in `RESULT.md`.
+
+Build and smoke:
+
+```sh
+make -C experiments/milestone1_one_room
+make -C experiments/milestone1_one_room mame-capture
+make -C experiments/milestone1_one_room mame-bench
+```
+
+`mame-capture` saves a native MAME screenshot at
+`build/snap/m1_smoke.png`.
