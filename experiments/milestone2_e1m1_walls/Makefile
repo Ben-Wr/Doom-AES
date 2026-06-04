@@ -49,11 +49,14 @@ MAP_HEADER := $(GENERATED)/$(MAP_LOWER)_map_data.h
 MAP_REPORT := $(GENERATED)/$(MAP_LOWER)_map_report.json
 MAP_BANK := $(GENERATED)/$(MAP_LOWER)_map_bank.bin
 MAP_PREVIEW := $(GENERATED)/$(MAP_LOWER)_map_preview.svg
+WALL_ATLAS_GIF := $(GENERATED)/$(MAP_LOWER)_wall_cards.gif
+WALL_ATLAS_REPORT := $(GENERATED)/$(MAP_LOWER)_wall_atlas_report.json
+WALL_ATLAS_HEADER := $(GENERATED)/$(MAP_LOWER)_wall_cards.h
 
 ELF := $(BUILDDIR)/rom.elf
 OBJ := $(BUILDDIR)/main.o
 FIX_GIF := $(ASSETDIR)/m2_fix.gif
-CARD_GIF := $(ASSETDIR)/m2_card_16x512.gif
+CARD_GIF := $(WALL_ATLAS_GIF)
 SROM_BIN := $(ASSETDIR)/m2_fix.fix
 CARD_C1 := $(ASSETDIR)/m2_card.c1
 CARD_C2 := $(ASSETDIR)/m2_card.c2
@@ -82,8 +85,14 @@ $(MAP_HEADER) $(MAP_REPORT) $(MAP_BANK) $(MAP_PREVIEW): $(WAD) $(ROOT)/tools/wad
 
 compile-map: $(MAP_HEADER) $(MAP_REPORT) $(MAP_BANK) $(MAP_PREVIEW)
 
-$(FIX_GIF) $(CARD_GIF): $(ASSET_TOOL) | $(ASSETDIR)
-	$(PYTHON) $(ASSET_TOOL) --fix $(FIX_GIF) --card $(CARD_GIF)
+$(WALL_ATLAS_GIF) $(WALL_ATLAS_REPORT) $(WALL_ATLAS_HEADER): $(WAD) $(MAP_REPORT) $(ROOT)/tools/wad2ng/cli.py $(ROOT)/tools/wad2ng/doom_texture.py | $(GENERATED)
+	PYTHONPATH=$(ROOT) $(PYTHON) -m tools.wad2ng.cli compile-wall-atlas "$(WAD)" \
+		--map $(MAP) --out $(GENERATED)
+
+compile-wall-atlas: $(WALL_ATLAS_GIF) $(WALL_ATLAS_REPORT) $(WALL_ATLAS_HEADER)
+
+$(FIX_GIF): $(ASSET_TOOL) | $(ASSETDIR)
+	$(PYTHON) $(ASSET_TOOL) --fix $(FIX_GIF) --card $(ASSETDIR)/unused_card.gif
 
 $(SROM_BIN): $(FIX_GIF) | $(ASSETDIR)
 	$(TILETOOL) --fix -c $< -o $@
@@ -91,7 +100,7 @@ $(SROM_BIN): $(FIX_GIF) | $(ASSETDIR)
 $(CARD_C1) $(CARD_C2): $(CARD_GIF) | $(ASSETDIR)
 	$(TILETOOL) --sprite -c $< -o $(CARD_C1) $(CARD_C2)
 
-$(OBJ): main.c ../common/ng_profile.h $(MAP_HEADER) | $(BUILDDIR)
+$(OBJ): main.c ../common/ng_profile.h $(MAP_HEADER) $(WALL_ATLAS_HEADER) | $(BUILDDIR)
 	$(M68KGCC) $(NGCFLAGS) $(CFLAGS) -c $< -o $@
 
 $(ELF): $(OBJ)
@@ -166,4 +175,4 @@ mame-capture: $(CART) $(MAME_HASH) $(BIOS)
 clean:
 	rm -rf $(BUILDDIR)
 
-.PHONY: all compile-map gngeo mame mame-bench mame-capture clean
+.PHONY: all compile-map compile-wall-atlas gngeo mame mame-bench mame-capture clean

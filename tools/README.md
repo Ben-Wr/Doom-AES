@@ -20,4 +20,5 @@ Current `wad2ng` entry points:
 python3 -m tools.wad2ng.cli inspect iwads/DOOM1.WAD
 python3 -m tools.wad2ng.cli extract-graphics iwads/DOOM1.WAD --out build/wad2ng/doom1 --namespace all
 python3 -m tools.wad2ng.cli compile-map iwads/DOOM1.WAD --map E1M1 --out build/wad2ng/e1m1 --emit-header --emit-svg
+python3 -m tools.wad2ng.cli compile-wall-atlas iwads/DOOM1.WAD --map E1M1 --out build/wad2ng/e1m1
 ```

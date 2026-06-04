@@ -36,7 +36,7 @@ docs/                         Design doctrine and project rules
 scripts/                      Environment checks and budget calculators
 experiments/milestone0_*      First Neo Geo sprite-path proof
 experiments/milestone1_*      One-room Doom geometry proof
-experiments/milestone2_*      E1M1 walls-only proof
+experiments/milestone2_*      E1M1 walls-only geometry + wall-card proof
 harness/                      Neo Geo microbench/profiling experiments
 external/                     Downloaded source/tool references, ignored by git
 references/                   Mirrored docs and research notes, ignored/generated where appropriate

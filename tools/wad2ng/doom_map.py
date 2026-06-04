@@ -11,7 +11,7 @@ from .wad import MAP_LUMPS, Lump, Wad
 
 
 MAP_BANK_MAGIC = b"NGM2MAP1"
-MAP_BANK_VERSION = 1
+MAP_BANK_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -320,6 +320,12 @@ def fixed16(value: int) -> int:
     return value << 16
 
 
+def _seg_length(doom_map: DoomMap, seg: Seg) -> int:
+    v0 = doom_map.vertices[seg.v1]
+    v1 = doom_map.vertices[seg.v2]
+    return max(1, int(round(math.hypot(v1.x - v0.x, v1.y - v0.y))))
+
+
 def _signed_sidedef_index(value: int) -> int:
     return value if value >= 0 else -1
 
@@ -341,7 +347,7 @@ def estimate_bank_bytes(doom_map: DoomMap) -> int:
         + len(doom_map.sectors) * 10
         + len(doom_map.sidedefs) * 14
         + len(doom_map.linedefs) * 14
-        + len(doom_map.segs) * 12
+        + len(doom_map.segs) * 14
         + len(doom_map.subsectors) * 4
         + len(doom_map.nodes) * 28
         + len(doom_map.things) * 10
@@ -423,13 +429,14 @@ def write_binary_bank(doom_map: DoomMap, path: Path) -> None:
     for seg in doom_map.segs:
         chunks.append(
             struct.pack(
-                ">HHhHhh",
+                ">HHhHhhH",
                 seg.v1 & 0xFFFF,
                 seg.v2 & 0xFFFF,
                 seg.angle,
                 seg.linedef & 0xFFFF,
                 seg.side,
                 seg.offset,
+                _seg_length(doom_map, seg),
             )
         )
     for subsector in doom_map.subsectors:
@@ -491,7 +498,7 @@ def write_c_header(doom_map: DoomMap, path: Path) -> None:
         "typedef struct { int16_t floor; int16_t ceil; uint16_t light; uint16_t special; uint16_t tag; } m2_sector_t;",
         "typedef struct { int16_t xoff; int16_t yoff; uint16_t upper; uint16_t lower; uint16_t middle; int16_t sector; } m2_sidedef_t;",
         "typedef struct { uint16_t v1; uint16_t v2; uint16_t flags; uint16_t special; uint16_t tag; int16_t right; int16_t left; } m2_linedef_t;",
-        "typedef struct { uint16_t v1; uint16_t v2; int16_t angle; uint16_t linedef; int16_t side; int16_t offset; } m2_seg_t;",
+        "typedef struct { uint16_t v1; uint16_t v2; int16_t angle; uint16_t linedef; int16_t side; int16_t offset; uint16_t length; } m2_seg_t;",
         "typedef struct { uint16_t seg_count; uint16_t first_seg; } m2_subsector_t;",
         "typedef struct { int16_t x; int16_t y; int16_t dx; int16_t dy; int16_t bbox[2][4]; uint16_t child[2]; } m2_node_t;",
         "",
@@ -538,7 +545,7 @@ def write_c_header(doom_map: DoomMap, path: Path) -> None:
     lines.append("")
     lines.append("static const m2_seg_t m2_segs[] = {")
     lines.extend(
-        f"    {{ {seg.v1}u, {seg.v2}u, {seg.angle}, {seg.linedef}u, {seg.side}, {seg.offset} }},"
+        f"    {{ {seg.v1}u, {seg.v2}u, {seg.angle}, {seg.linedef}u, {seg.side}, {seg.offset}, {_seg_length(doom_map, seg)}u }},"
         for seg in doom_map.segs
     )
     lines.append("};")

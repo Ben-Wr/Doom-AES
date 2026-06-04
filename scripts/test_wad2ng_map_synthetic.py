@@ -6,7 +6,7 @@ import struct
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.wad2ng.cli import command_compile_map
+from tools.wad2ng.cli import command_compile_map, command_compile_wall_atlas
 from tools.wad2ng.doom_map import MAP_BANK_MAGIC, MAP_BANK_VERSION
 from tools.wad2ng.wad import Wad
 
@@ -17,6 +17,37 @@ class Args:
     out = ""
     emit_header = True
     emit_svg = True
+    palette = 0
+
+
+def patch_lump() -> bytes:
+    width = 2
+    height = 2
+    header = struct.pack("<hhhh", width, height, 0, 0)
+    table_offset = 8 + width * 4
+    col0 = bytes([0, 2, 0, 1, 2, 0, 255])
+    col1 = bytes([0, 2, 0, 3, 4, 0, 255])
+    offsets = struct.pack("<II", table_offset, table_offset + len(col0))
+    return header + offsets + col0 + col1
+
+
+def playpal_lump() -> bytes:
+    playpal = bytearray()
+    for i in range(256):
+        playpal.extend((i, i, i))
+    return bytes(playpal)
+
+
+def pnames_lump() -> bytes:
+    return struct.pack("<i8s", 1, b"PATCHA\0\0")
+
+
+def texture1_lump() -> bytes:
+    texture_offset = 8
+    header = struct.pack("<iI", 1, texture_offset)
+    texture = struct.pack("<8sihhiH", b"STARTAN3", 0, 64, 64, 0, 1)
+    patch = struct.pack("<hhhhh", 0, 0, 0, 0, 0)
+    return header + texture + patch
 
 
 def sector_lump() -> bytes:
@@ -51,6 +82,12 @@ def make_wad(path: Path) -> None:
     ssectors = struct.pack("<HH", 4, 0)
 
     lumps = [
+        ("PLAYPAL", playpal_lump()),
+        ("PNAMES", pnames_lump()),
+        ("TEXTURE1", texture1_lump()),
+        ("P_START", b""),
+        ("PATCHA", patch_lump()),
+        ("P_END", b""),
         ("E1M1", b""),
         ("THINGS", things),
         ("LINEDEFS", linedefs),
@@ -96,6 +133,7 @@ def main() -> int:
     args.wad = str(wad_path)
     args.out = str(out)
     command_compile_map(args)
+    command_compile_wall_atlas(args)
 
     report = json.loads((out / "e1m1_map_report.json").read_text())
     assert report["counts"]["vertices"] == 4
@@ -121,6 +159,14 @@ def main() -> int:
     header_text = (out / "e1m1_map_data.h").read_text()
     assert "#define M2_PLAYER_START_X 128" in header_text
     assert (out / "e1m1_map_preview.svg").exists()
+    atlas_report = json.loads((out / "e1m1_wall_atlas_report.json").read_text())
+    assert atlas_report["texture_count"] == 1
+    assert atlas_report["cards"] == 4
+    assert atlas_report["textures"][0]["card_count"] == 4
+    assert atlas_report["missing_textures"] == []
+    assert (out / "e1m1_wall_cards.gif").exists()
+    wall_header_text = (out / "e1m1_wall_cards.h").read_text()
+    assert "#define M2_WALL_CARD_COUNT 4u" in wall_header_text
     print("synthetic wad2ng map compile test passed")
     return 0
 

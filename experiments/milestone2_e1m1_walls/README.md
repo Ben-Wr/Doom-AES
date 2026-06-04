@@ -27,7 +27,10 @@ Work log:
 [x] BSP traversal + seg projection + chunk LOD by distance/pressure
 [x] upper/middle/lower wall emission from real E1M1 sectors/sidedefs
 [x] deterministic first-pass degrade ladder (bucket merge before sprite overflow)
-wall texture composition (TEXTURE1/PNAMES) -> 16px U cards + phases + light palettes
+[x] wall texture composition (TEXTURE1/PNAMES) -> 16px U-slice cards
+[x] generated wall-card metadata for runtime card selection/family fallback
+[x] conservative BSP branch culling from node bounding boxes
+vertical phase variants + per-material light palettes
 worst-case-scene regression suite seeded from E1M1's nastiest sightlines
 budget reports per scene (fps, peak sprites/line, SCB words, RAM)
 ```
@@ -38,6 +41,7 @@ Compile the local ignored IWAD:
 
 ```sh
 make -C experiments/milestone2_e1m1_walls WAD=../../iwads/DOOM1.WAD compile-map
+make -C experiments/milestone2_e1m1_walls WAD=../../iwads/DOOM1.WAD compile-wall-atlas
 make -C experiments/milestone2_e1m1_walls WAD=../../iwads/DOOM1.WAD
 make -C experiments/milestone2_e1m1_walls WAD=../../iwads/DOOM1.WAD mame-capture
 ```

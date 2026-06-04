@@ -13,6 +13,7 @@ from .doom_picture import (
     tile_count_for_strip,
     upscale_to_height,
 )
+from .doom_texture import write_wall_atlas
 from .wad import Lump, Wad
 
 
@@ -171,6 +172,23 @@ def command_compile_map(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_compile_wall_atlas(args: argparse.Namespace) -> int:
+    wad = Wad(Path(args.wad))
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    atlas_path = out / f"{args.map.lower()}_wall_cards.gif"
+    report_path = out / f"{args.map.lower()}_wall_atlas_report.json"
+    header_path = out / f"{args.map.lower()}_wall_cards.h"
+    write_wall_atlas(wad, args.map, atlas_path, report_path, header_path, args.palette)
+    print(
+        json.dumps(
+            {"map": args.map.upper(), "atlas": str(atlas_path), "report": str(report_path), "header": str(header_path)},
+            indent=2,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Doom WAD to Neo Geo asset pipeline helper")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -196,6 +214,13 @@ def build_parser() -> argparse.ArgumentParser:
     compile_map.add_argument("--emit-header", action="store_true")
     compile_map.add_argument("--emit-svg", action="store_true")
     compile_map.set_defaults(func=command_compile_map)
+
+    wall_atlas = sub.add_parser("compile-wall-atlas", help="Compose map wall textures into representative Neo Geo cards")
+    wall_atlas.add_argument("wad")
+    wall_atlas.add_argument("--map", default="E1M1")
+    wall_atlas.add_argument("--out", required=True)
+    wall_atlas.add_argument("--palette", type=int, default=0)
+    wall_atlas.set_defaults(func=command_compile_wall_atlas)
 
     return parser
 

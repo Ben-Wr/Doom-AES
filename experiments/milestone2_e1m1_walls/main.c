@@ -6,6 +6,7 @@
 
 #include "ng_profile.h"
 #include "e1m1_map_data.h"
+#include "e1m1_wall_cards.h"
 
 #define CARD_START_TILE 256u
 #define CARD_TILE_COUNT 32u
@@ -35,8 +36,13 @@
 #define OCC_BUCKETS 32u
 #define DEMO_CYCLE_FRAMES 960u
 #define RENDER_PASS_COUNT 6u
-#define TARGET_SPRITES 84u
-#define TARGET_PEAK 88u
+#define TARGET_SPRITES 92u
+#define TARGET_PEAK 94u
+#define MAX_SCB1_REWRITES 20u
+#define TEXTURE_COARSE_Z 260u
+#define FAMILY_TEXTURE_LOD 5u
+#define FAMILY_TEXTURE_Z 760u
+#define FRUSTUM_MARGIN_PX 64
 
 typedef enum wall_role_t {
     ROLE_MIDDLE = 0,
@@ -88,6 +94,10 @@ static uint8_t bucket_size;
 static uint8_t auto_demo;
 static uint16_t demo_frame;
 static uint8_t pass_overflow;
+static uint8_t scb1_rewrites;
+static uint8_t scb1_deferred;
+static uint8_t max_scb1_rewrites;
+static uint8_t max_scb1_deferred;
 static uint8_t role_counts[3];
 static uint8_t max_roles[3];
 static uint8_t max_peak;
@@ -97,6 +107,7 @@ static uint8_t min_fps;
 static uint16_t segs_visited;
 static uint16_t subsectors_visited;
 static uint16_t nodes_visited;
+static uint16_t nodes_culled;
 static uint8_t guard_asserted;
 
 static const uint8_t lod_bucket_sizes[RENDER_PASS_COUNT] = {
@@ -167,8 +178,8 @@ static void init_palettes(void) {
     static const uint16_t clut[80] = {
         0x8000, 0x0fff, 0x0555, 0x0f00, 0x00f0, 0x000f, 0x0ff0, 0x0f0f,
         0x00ff, 0x0222, 0x0444, 0x0666, 0x0888, 0x0aaa, 0x0ccc, 0x0eee,
-        0x0000, 0x0211, 0x0322, 0x0433, 0x0544, 0x0655, 0x0766, 0x0877,
-        0x0988, 0x0a99, 0x0baa, 0x0cbb, 0x0dcc, 0x0edd, 0x0fee, 0x0fff,
+        0x0000, 0x0eed, 0x0556, 0x0b33, 0x0ea4, 0x0596, 0x048b, 0x085a,
+        0x0dd8, 0x0223, 0x0643, 0x0853, 0x0b74, 0x0575, 0x0478, 0x0eeb,
         0x0000, 0x0002, 0x0014, 0x0026, 0x0038, 0x004a, 0x005c, 0x006e,
         0x008f, 0x028f, 0x048f, 0x068f, 0x089f, 0x0aaf, 0x0ccf, 0x0fff,
         0x0000, 0x0200, 0x0420, 0x0640, 0x0860, 0x0a80, 0x0ca0, 0x0ec0,
@@ -195,6 +206,8 @@ static void reset_state(void) {
     max_peak = 0;
     max_sprites = 0;
     max_scb_words = 0;
+    max_scb1_rewrites = 0;
+    max_scb1_deferred = 0;
     min_fps = 60;
     for (uint8_t i = 0; i < 3; i++) {
         max_roles[i] = 0;
@@ -364,6 +377,45 @@ static uint8_t bucket_occluded(int16_t x, uint16_t depth) {
     return (uint8_t)(depth > bucket_depth[bucket] + 16u);
 }
 
+static uint8_t bbox_visible(const int16_t bbox[4]) {
+    enum { BBOX_TOP = 0, BBOX_BOTTOM = 1, BBOX_LEFT = 2, BBOX_RIGHT = 3 };
+    int16_t c = cos_q8(player.angle);
+    int16_t s = sin_q8(player.angle);
+    int16_t right_x = -s;
+    int16_t right_y = c;
+    int16_t xs[4] = { bbox[BBOX_LEFT], bbox[BBOX_RIGHT], bbox[BBOX_LEFT], bbox[BBOX_RIGHT] };
+    int16_t ys[4] = { bbox[BBOX_TOP], bbox[BBOX_TOP], bbox[BBOX_BOTTOM], bbox[BBOX_BOTTOM] };
+    int16_t min_x = SCREEN_W + FRUSTUM_MARGIN_PX;
+    int16_t max_x = -FRUSTUM_MARGIN_PX;
+    uint8_t front_corners = 0;
+
+    if (player.x >= bbox[BBOX_LEFT] - 64 && player.x <= bbox[BBOX_RIGHT] + 64 &&
+        player.y >= bbox[BBOX_BOTTOM] - 64 && player.y <= bbox[BBOX_TOP] + 64) {
+        return 1;
+    }
+
+    for (uint8_t i = 0; i < 4; i++) {
+        int32_t dx = xs[i] - player.x;
+        int32_t dy = ys[i] - player.y;
+        int32_t z = (dx * c + dy * s) >> 8;
+        int32_t side;
+        int16_t projected_x;
+        if (z <= NEAR_Z) {
+            continue;
+        }
+        front_corners++;
+        side = (dx * right_x + dy * right_y) >> 8;
+        projected_x = (int16_t)(SCREEN_W / 2 + (side * FOCAL) / z);
+        if (projected_x < min_x) min_x = projected_x;
+        if (projected_x > max_x) max_x = projected_x;
+    }
+
+    if (!front_corners) {
+        return 0;
+    }
+    return (uint8_t)(max_x >= -FRUSTUM_MARGIN_PX && min_x < SCREEN_W + FRUSTUM_MARGIN_PX);
+}
+
 static void mark_bucket(int16_t x, uint16_t depth) {
     uint8_t bucket = bucket_for_x(x);
     if (!bucket_filled[bucket] || depth < bucket_depth[bucket]) {
@@ -380,7 +432,28 @@ static void add_cmd(sprite_cmd_t cmd) {
     cmds[cmd_count++] = cmd;
 }
 
-static void emit_chunk(wall_role_t role, int16_t x, int16_t top, uint16_t height, uint16_t depth, uint8_t width) {
+static uint16_t select_wall_card(uint16_t texture_id, uint16_t u_offset, uint16_t depth) {
+    uint16_t base;
+    uint8_t count;
+    uint8_t shift = 4u;
+    if (texture_id >= M2_WALL_TEXTURE_COUNT) {
+        return 0;
+    }
+    if (global_lod >= FAMILY_TEXTURE_LOD || depth > FAMILY_TEXTURE_Z) {
+        return m2_texture_family_card[texture_id];
+    }
+    base = m2_texture_card_base[texture_id];
+    count = m2_texture_card_count[texture_id];
+    if (count <= 1u) {
+        return base;
+    }
+    if (global_lod >= 2u || depth > TEXTURE_COARSE_Z) {
+        shift = 5u;
+    }
+    return (uint16_t)(base + (((uint16_t)(u_offset >> shift)) % count));
+}
+
+static void emit_chunk(uint16_t texture_id, wall_role_t role, int16_t x, int16_t top, uint16_t height, uint16_t depth, uint8_t width, uint16_t u_offset) {
     sprite_cmd_t cmd;
     int16_t bot;
     if (height < 2 || width == 0) {
@@ -395,7 +468,7 @@ static void emit_chunk(wall_role_t role, int16_t x, int16_t top, uint16_t height
     if (bot <= top + 1) return;
     height = (uint16_t)(bot - top);
 
-    cmd.card_id = 0;
+    cmd.card_id = select_wall_card(texture_id, u_offset, depth);
     cmd.x = x;
     cmd.y = top;
     cmd.height = height;
@@ -414,7 +487,7 @@ static void emit_chunk(wall_role_t role, int16_t x, int16_t top, uint16_t height
     add_cmd(cmd);
 }
 
-static void emit_wall_role(uint16_t v0_index, uint16_t v1_index, wall_role_t role, int16_t floor, int16_t ceil) {
+static void emit_wall_role(uint16_t texture_id, int16_t texture_xoff, int16_t seg_offset, uint16_t wall_length, uint16_t v0_index, uint16_t v1_index, wall_role_t role, int16_t floor, int16_t ceil) {
     int16_t c = cos_q8(player.angle);
     int16_t s = sin_q8(player.angle);
     int16_t right_x = -s;
@@ -432,6 +505,9 @@ static void emit_wall_role(uint16_t v0_index, uint16_t v1_index, wall_role_t rol
     int16_t left;
     int16_t right;
     uint16_t depth;
+    uint16_t screen_span;
+    uint32_t u_acc;
+    uint32_t u_step;
     int16_t top;
     int16_t bot;
 
@@ -475,9 +551,19 @@ static void emit_wall_role(uint16_t v0_index, uint16_t v1_index, wall_role_t rol
         return;
     }
 
+    screen_span = (uint16_t)(right - left);
+    if (wall_length == 0) {
+        wall_length = 1;
+    }
+    u_acc = ((uint32_t)((uint16_t)(texture_xoff + seg_offset))) << 8;
+    u_step = (((uint32_t)wall_length * bucket_size) << 8) / screen_span;
+    if (u_step == 0) {
+        u_step = 1u << 8;
+    }
     for (int16_t x = left; x < right; x += bucket_size) {
         uint8_t width = (uint8_t)((right - x) >= 16 ? 16 : (right - x));
-        emit_chunk(role, x, top, (uint16_t)(bot - top), depth, width);
+        emit_chunk(texture_id, role, x, top, (uint16_t)(bot - top), depth, width, (uint16_t)(u_acc >> 8));
+        u_acc += u_step;
     }
 }
 
@@ -515,24 +601,26 @@ static void emit_seg(uint16_t seg_index) {
     }
     front_sector = &m2_sectors[front_sector_index];
     if (back_side < 0 || back_side >= (int16_t)M2_SIDEDEF_COUNT) {
-        emit_wall_role(seg->v1, seg->v2, ROLE_MIDDLE, front_sector->floor, front_sector->ceil);
+        uint16_t texture_id = m2_sidedefs[front_side].middle;
+        emit_wall_role(texture_id ? (uint16_t)(texture_id - 1u) : 0u, m2_sidedefs[front_side].xoff, seg->offset, seg->length, seg->v1, seg->v2, ROLE_MIDDLE, front_sector->floor, front_sector->ceil);
         return;
     }
 
     back_sector_index = m2_sidedefs[back_side].sector;
     if (back_sector_index < 0 || back_sector_index >= (int16_t)M2_SECTOR_COUNT) {
-        emit_wall_role(seg->v1, seg->v2, ROLE_MIDDLE, front_sector->floor, front_sector->ceil);
+        uint16_t texture_id = m2_sidedefs[front_side].middle;
+        emit_wall_role(texture_id ? (uint16_t)(texture_id - 1u) : 0u, m2_sidedefs[front_side].xoff, seg->offset, seg->length, seg->v1, seg->v2, ROLE_MIDDLE, front_sector->floor, front_sector->ceil);
         return;
     }
     back_sector = &m2_sectors[back_sector_index];
     if (m2_sidedefs[front_side].middle) {
-        emit_wall_role(seg->v1, seg->v2, ROLE_MIDDLE, front_sector->floor, front_sector->ceil);
+        emit_wall_role((uint16_t)(m2_sidedefs[front_side].middle - 1u), m2_sidedefs[front_side].xoff, seg->offset, seg->length, seg->v1, seg->v2, ROLE_MIDDLE, front_sector->floor, front_sector->ceil);
     }
-    if (back_sector->ceil < front_sector->ceil) {
-        emit_wall_role(seg->v1, seg->v2, ROLE_UPPER, back_sector->ceil, front_sector->ceil);
+    if (back_sector->ceil < front_sector->ceil && m2_sidedefs[front_side].upper) {
+        emit_wall_role((uint16_t)(m2_sidedefs[front_side].upper - 1u), m2_sidedefs[front_side].xoff, seg->offset, seg->length, seg->v1, seg->v2, ROLE_UPPER, back_sector->ceil, front_sector->ceil);
     }
-    if (back_sector->floor > front_sector->floor) {
-        emit_wall_role(seg->v1, seg->v2, ROLE_LOWER, front_sector->floor, back_sector->floor);
+    if (back_sector->floor > front_sector->floor && m2_sidedefs[front_side].lower) {
+        emit_wall_role((uint16_t)(m2_sidedefs[front_side].lower - 1u), m2_sidedefs[front_side].xoff, seg->offset, seg->length, seg->v1, seg->v2, ROLE_LOWER, front_sector->floor, back_sector->floor);
     }
 }
 
@@ -567,8 +655,16 @@ static void traverse_node(uint16_t node_index, uint8_t depth) {
     node = &m2_nodes[node_index];
     near_child = (node_side(node) <= 0) ? 0u : 1u;
     far_child = near_child ^ 1u;
-    traverse_child(node->child[near_child], (uint8_t)(depth + 1u));
-    traverse_child(node->child[far_child], (uint8_t)(depth + 1u));
+    if (bbox_visible(node->bbox[near_child])) {
+        traverse_child(node->child[near_child], (uint8_t)(depth + 1u));
+    } else {
+        nodes_culled++;
+    }
+    if (bbox_visible(node->bbox[far_child])) {
+        traverse_child(node->child[far_child], (uint8_t)(depth + 1u));
+    } else {
+        nodes_culled++;
+    }
 }
 
 static void traverse_child(uint16_t child, uint8_t depth) {
@@ -616,6 +712,7 @@ static void render_pass(void) {
     segs_visited = 0;
     subsectors_visited = 0;
     nodes_visited = 0;
+    nodes_culled = 0;
     role_counts[ROLE_MIDDLE] = 0;
     role_counts[ROLE_UPPER] = 0;
     role_counts[ROLE_LOWER] = 0;
@@ -653,11 +750,14 @@ static void render_scene(void) {
     }
 }
 
-static void write_tilemap(uint16_t sprite) {
+static void write_tilemap(uint16_t sprite, uint16_t card_id) {
+    if (card_id >= M2_WALL_CARD_COUNT) {
+        card_id = 0;
+    }
     *REG_VRAMMOD = 1;
     *REG_VRAMADDR = ADDR_SCB1 + (sprite * 64u);
     for (uint16_t i = 0; i < CARD_TILE_COUNT; i++) {
-        *REG_VRAMRW = CARD_START_TILE + (i & 31u);
+        *REG_VRAMRW = CARD_START_TILE + card_id * CARD_TILE_COUNT + (i & 31u);
         *REG_VRAMRW = 1u << 8;
     }
     profile.scb1_words += CARD_TILE_COUNT * 2u;
@@ -665,7 +765,7 @@ static void write_tilemap(uint16_t sprite) {
 
 static void preload_wall_tilemaps(void) {
     for (uint8_t i = 0; i < MAX_CMDS; i++) {
-        write_tilemap(SPRITE_BASE + i);
+        write_tilemap(SPRITE_BASE + i, 0);
         shadow_card_id[i] = 0;
         shadow_valid[i] = 1;
     }
@@ -690,6 +790,8 @@ static void upload_controls(uint8_t count) {
 
 static void upload_scene(void) {
     uint8_t active_count = cmd_count > last_cmd_count ? cmd_count : last_cmd_count;
+    scb1_rewrites = 0;
+    scb1_deferred = 0;
     if (active_count > MAX_CMDS) {
         active_count = MAX_CMDS;
     }
@@ -701,9 +803,14 @@ static void upload_scene(void) {
             ctrl_scb3[i] = (uint16_t)((scb3_yfield_from_top(cmd->y) << 7) | (cmd->size_tiles & 0x3fu));
             ctrl_scb4[i] = (uint16_t)(((uint16_t)(cmd->x & 0x01ff)) << 7);
             if (!shadow_valid[i] || shadow_card_id[i] != cmd->card_id) {
-                write_tilemap(sprite);
-                shadow_card_id[i] = cmd->card_id;
-                shadow_valid[i] = 1;
+                if (scb1_rewrites < MAX_SCB1_REWRITES) {
+                    write_tilemap(sprite, cmd->card_id);
+                    shadow_card_id[i] = cmd->card_id;
+                    shadow_valid[i] = 1;
+                    scb1_rewrites++;
+                } else {
+                    scb1_deferred++;
+                }
             }
         } else {
             ctrl_scb2[i] = 0;
@@ -735,6 +842,8 @@ static void update_max_metrics(uint16_t scb_words, uint16_t fit_frames) {
     if (profile.max_sprites_scanline > max_peak) max_peak = profile.max_sprites_scanline;
     if (profile.sprites_emitted > max_sprites) max_sprites = (uint8_t)profile.sprites_emitted;
     if (scb_words > max_scb_words) max_scb_words = scb_words;
+    if (scb1_rewrites > max_scb1_rewrites) max_scb1_rewrites = scb1_rewrites;
+    if (scb1_deferred > max_scb1_deferred) max_scb1_deferred = scb1_deferred;
     if (fps < min_fps) min_fps = fps;
     for (uint8_t i = 0; i < 3; i++) {
         if (role_counts[i] > max_roles[i]) {
@@ -755,7 +864,7 @@ static void draw_overlay(void) {
     put_overlay_line(2, line);
     snprintf(line, sizeof(line), "POS %5d,%5d ANG %02u LOD %u B%02u", player.x, player.y, player.angle, global_lod, bucket_size);
     put_overlay_line(4, line);
-    snprintf(line, sizeof(line), "N%03u SS%03u SEG%03u TEX%02u", nodes_visited, subsectors_visited, segs_visited, M2_TEXTURE_COUNT);
+    snprintf(line, sizeof(line), "N%03u K%03u SS%03u SEG%03u", nodes_visited, nodes_culled, subsectors_visited, segs_visited);
     put_overlay_line(5, line);
     snprintf(line, sizeof(line), "SPR %02u PEAK %02u SCB %04u FIT %u", profile.sprites_emitted, profile.max_sprites_scanline, scb_words, fit_frames);
     put_overlay_line(6, line);
@@ -765,7 +874,7 @@ static void draw_overlay(void) {
     put_overlay_line(8, line);
     snprintf(line, sizeof(line), "FPS %02u DEG $%04X RAM %5u", (uint16_t)(60u / fit_frames), profile.degrade_flags, profile.ram_high_water_bytes);
     put_overlay_line(9, line);
-    snprintf(line, sizeof(line), "MAP V%03u L%03u SEC%02u ART %s", M2_VERTEX_COUNT, M2_LINEDEF_COUNT, M2_SECTOR_COUNT, guard_asserted ? "GUARD" : "CLEAR");
+    snprintf(line, sizeof(line), "TEX R%02u D%02u MAXR%02u D%02u", scb1_rewrites, scb1_deferred, max_scb1_rewrites, max_scb1_deferred);
     put_overlay_line(10, line);
 }
 
