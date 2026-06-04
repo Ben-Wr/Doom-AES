@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .doom_map import compile_report, read_map, write_binary_bank, write_c_header, write_report, write_svg_preview
 from .doom_picture import (
     looks_like_picture,
     read_playpal,
@@ -129,6 +130,47 @@ def command_extract_graphics(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_compile_map(args: argparse.Namespace) -> int:
+    wad = Wad(Path(args.wad))
+    doom_map = read_map(wad, args.map)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    report = compile_report(wad, doom_map)
+    report_path = out / f"{doom_map.name.lower()}_map_report.json"
+    bank_path = out / f"{doom_map.name.lower()}_map_bank.bin"
+    header_path = out / f"{doom_map.name.lower()}_map_data.h"
+    svg_path = out / f"{doom_map.name.lower()}_map_preview.svg"
+
+    write_binary_bank(doom_map, bank_path)
+    if args.emit_header:
+        write_c_header(doom_map, header_path)
+    if args.emit_svg:
+        write_svg_preview(doom_map, svg_path)
+    actual_bank_bytes = bank_path.stat().st_size
+    report["outputs"] = {
+        "report": str(report_path),
+        "bank": str(bank_path),
+        "header": str(header_path) if args.emit_header else None,
+        "svg": str(svg_path) if args.emit_svg else None,
+    }
+    report["actual_bank_bytes"] = actual_bank_bytes
+    write_report(report, report_path)
+
+    result = {
+        "map": doom_map.name,
+        "report": str(report_path),
+        "bank": str(bank_path),
+        "header": str(header_path) if args.emit_header else None,
+        "svg": str(svg_path) if args.emit_svg else None,
+        "counts": report["counts"],
+        "estimated_bank_bytes": report["estimated_bank_bytes"],
+        "actual_bank_bytes": actual_bank_bytes,
+    }
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Doom WAD to Neo Geo asset pipeline helper")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -147,6 +189,14 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--split-strips", action="store_true")
     extract.set_defaults(func=command_extract_graphics)
 
+    compile_map = sub.add_parser("compile-map", help="Compile a Doom map into Neo Geo-oriented map metadata")
+    compile_map.add_argument("wad")
+    compile_map.add_argument("--map", default="E1M1")
+    compile_map.add_argument("--out", required=True)
+    compile_map.add_argument("--emit-header", action="store_true")
+    compile_map.add_argument("--emit-svg", action="store_true")
+    compile_map.set_defaults(func=command_compile_map)
+
     return parser
 
 
@@ -158,4 +208,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

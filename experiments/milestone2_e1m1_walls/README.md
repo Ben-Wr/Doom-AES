@@ -18,8 +18,11 @@ Offline pipeline: [docs/04_asset_pipeline.md](../../docs/04_asset_pipeline.md) a
 Work log:
 
 ```text
-host WAD reader (tools/wad2ng) + ZDBSP/glBSP nodes
-map lump extraction -> compact banked map output
+[x] host WAD reader (tools/wad2ng)
+[x] map lump extraction -> compact big-endian map bank output
+[x] generated C header for ROM-side experiments
+[x] generated SVG map preview for visual inspection
+[ ] ZDBSP/glBSP node rebuild integration
 wall texture composition (TEXTURE1/PNAMES) -> 16px U cards + phases + light palettes
 full BSP traversal + seg projection + chunk LOD by distance/pressure
 upper/middle/lower wall emission; doors/stairs/windows
@@ -29,3 +32,11 @@ budget reports per scene (fps, peak sprites/line, SCB words, RAM)
 ```
 
 No commercial IWAD data is committed here. Record results in `RESULT.md`.
+
+Compile the local ignored IWAD:
+
+```sh
+make -C experiments/milestone2_e1m1_walls WAD=../../iwads/DOOM1.WAD compile-map
+```
+
+Generated WAD-derived outputs stay under `build/` and must not be committed.
