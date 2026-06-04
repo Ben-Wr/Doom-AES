@@ -35,14 +35,14 @@ else
 fi
 
 printf "\nNeo Geo / retro tools:\n"
-check_cmd m68k-elf-gcc
-check_cmd m68k-elf-as
 check_cmd m68k-neogeo-elf-gcc
 check_cmd m68k-neogeo-elf-gdb
 check_cmd sdcc
+check_cmd ngdevkit-gngeo
+
+printf "\nOptional / alternate emulator tools:\n"
 check_cmd mame
 check_cmd gngeo
-check_cmd ngdevkit-gngeo
 
 printf "\nReference directories:\n"
 for path in \
