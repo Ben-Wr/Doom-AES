@@ -1,0 +1,35 @@
+# Build and generated artifacts
+build/
+dist/
+out/
+tmp/
+.venv/
+*.o
+*.elf
+*.map
+*.lst
+*.bin
+*.rom
+*.zip
+__pycache__/
+*.pyc
+
+# Local commercial/proprietary data. Do not commit IWADs or BIOS files.
+iwads/
+roms/
+bios/
+*.wad
+*.WAD
+
+# Downloaded source/reference trees
+external/*
+!external/README.md
+
+# Generated reference mirrors
+references/neogeodev/html/
+references/neogeodev/md/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
