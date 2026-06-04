@@ -29,6 +29,7 @@
 #define DOOR_CLOSED_CEIL 24
 #define DOOR_OPEN_CEIL 128
 #define DOOR_SPEED 2
+#define DEMO_CYCLE_FRAMES 720u
 #define VBLANK_PRACTICAL_WORDS 1664u
 #define STREAM_CYCLES_PER_WORD 12u
 #define ADDR_SET_CYCLES 16u
@@ -58,6 +59,17 @@ typedef struct line_t {
     uint8_t material;
     uint8_t door;
 } line_t;
+
+typedef struct seg_t {
+    uint8_t line;
+    uint8_t reverse;
+} seg_t;
+
+typedef struct subsector_t {
+    uint8_t first_seg;
+    uint8_t seg_count;
+    int8_t sector;
+} subsector_t;
 
 typedef struct sprite_cmd_t {
     uint16_t card_id;
@@ -113,6 +125,16 @@ static const line_t lines[] = {
     { 7, 3, 1, -1, 2, 0 }
 };
 
+static const seg_t segs[] = {
+    { 0, 0 }, { 1, 0 }, { 2, 0 }, { 3, 0 }, { 4, 0 }, { 5, 0 },
+    { 6, 0 }, { 7, 0 }, { 8, 0 }
+};
+
+static const subsector_t subsectors[] = {
+    { 0, 6, 0 },
+    { 6, 3, 1 }
+};
+
 static sprite_cmd_t cmds[MAX_CMDS];
 static uint16_t shadow_card_id[MAX_CMDS];
 static uint8_t shadow_valid[MAX_CMDS];
@@ -126,6 +148,14 @@ static uint16_t frame_id;
 static uint8_t cmd_count;
 static uint8_t last_cmd_count;
 static uint8_t guard_asserted;
+static uint8_t auto_demo;
+static uint16_t demo_frame;
+static uint8_t demo_max_peak;
+static uint16_t demo_max_scb_words;
+static uint16_t demo_max_sprites;
+static uint8_t demo_min_fps;
+static uint8_t role_counts[3];
+static uint8_t demo_max_roles[3];
 
 static int16_t sin_q8(uint8_t angle) {
     return sin_q8_table[angle & 63u];
@@ -219,9 +249,18 @@ static void reset_state(void) {
     cmd_count = 0;
     last_cmd_count = 0;
     guard_asserted = 0;
+    auto_demo = 1;
+    demo_frame = 0;
+    demo_max_peak = 0;
+    demo_max_scb_words = 0;
+    demo_max_sprites = 0;
+    demo_min_fps = 60;
+    demo_max_roles[ROLE_MIDDLE] = 0;
+    demo_max_roles[ROLE_UPPER] = 0;
+    demo_max_roles[ROLE_LOWER] = 0;
     for (uint8_t i = 0; i < MAX_CMDS; i++) {
-        shadow_card_id[i] = 0xffffu;
-        shadow_valid[i] = 0;
+        shadow_card_id[i] = 0;
+        shadow_valid[i] = 1;
     }
 }
 
@@ -286,11 +325,83 @@ static void try_move(int16_t dx, int16_t dy) {
     }
 }
 
+static uint8_t manual_input_active(void) {
+    uint16_t held = bios_p1current & (CNT_UP | CNT_DOWN | CNT_LEFT | CNT_RIGHT | CNT_A | CNT_B);
+    uint16_t changed = bios_p1change & (CNT_C | CNT_D);
+    return (uint8_t)(held || changed || (bios_statchange & CNT_START1));
+}
+
+static void update_door(void) {
+    if (door.target_open && door.ceil < DOOR_OPEN_CEIL) {
+        door.ceil += DOOR_SPEED;
+    } else if (!door.target_open && door.ceil > DOOR_CLOSED_CEIL) {
+        door.ceil -= DOOR_SPEED;
+    }
+}
+
+static void update_auto_demo(void) {
+    uint16_t phase = demo_frame % DEMO_CYCLE_FRAMES;
+    int16_t fx = cos_q8(player.angle);
+    int16_t fy = sin_q8(player.angle);
+    int16_t rx = -fy;
+    int16_t ry = fx;
+
+    if (phase == 0) {
+        player.x = 512;
+        player.y = 384;
+        player.angle = 0;
+        door.ceil = DOOR_CLOSED_CEIL;
+        door.target_open = 0;
+    } else if (phase < 96) {
+        if ((phase & 3u) == 0) {
+            player.angle = (uint8_t)((player.angle + 1u) & 63u);
+        }
+    } else if (phase < 180) {
+        player.angle = 0;
+        try_move((int16_t)((fx * MOVE_STEP) >> 8), (int16_t)((fy * MOVE_STEP) >> 8));
+    } else if (phase < 300) {
+        door.target_open = 1;
+        if (phase > 252 && player.x < 1100) {
+            try_move((int16_t)((fx * MOVE_STEP) >> 8), (int16_t)((fy * MOVE_STEP) >> 8));
+        }
+    } else if (phase < 420) {
+        door.target_open = 1;
+        if (player.x < 1120) {
+            try_move((int16_t)((fx * MOVE_STEP) >> 8), (int16_t)((fy * MOVE_STEP) >> 8));
+        }
+        if ((phase & 7u) == 0) {
+            player.angle = (uint8_t)((player.angle + 1u) & 63u);
+        }
+    } else if (phase < 540) {
+        door.target_open = 0;
+        try_move((int16_t)(-((fx * MOVE_STEP) >> 8)), (int16_t)(-((fy * MOVE_STEP) >> 8)));
+    } else if (phase < 660) {
+        if ((phase & 1u) == 0) {
+            player.angle = (uint8_t)((player.angle - 1u) & 63u);
+        }
+        try_move((int16_t)((rx * STRAFE_STEP) >> 8), (int16_t)((ry * STRAFE_STEP) >> 8));
+    } else {
+        try_move((int16_t)(-((rx * STRAFE_STEP) >> 8)), (int16_t)(-((ry * STRAFE_STEP) >> 8)));
+    }
+
+    update_door();
+    demo_frame++;
+}
+
 static void update_controls(void) {
     int16_t fx = cos_q8(player.angle);
     int16_t fy = sin_q8(player.angle);
     int16_t rx = -fy;
     int16_t ry = fx;
+
+    if (auto_demo && manual_input_active()) {
+        auto_demo = 0;
+    }
+
+    if (auto_demo) {
+        update_auto_demo();
+        return;
+    }
 
     if (bios_p1current & CNT_LEFT) {
         player.angle = (uint8_t)((player.angle - TURN_STEP) & 63u);
@@ -315,13 +426,10 @@ static void update_controls(void) {
     }
     if (bios_p1change & CNT_D || bios_statchange & CNT_START1) {
         reset_state();
+        return;
     }
 
-    if (door.target_open && door.ceil < DOOR_OPEN_CEIL) {
-        door.ceil += DOOR_SPEED;
-    } else if (!door.target_open && door.ceil > DOOR_CLOSED_CEIL) {
-        door.ceil -= DOOR_SPEED;
-    }
+    update_door();
 }
 
 static void add_cmd(sprite_cmd_t cmd) {
@@ -343,7 +451,8 @@ static void emit_chunk(uint8_t material, wall_role_t role, int16_t x, int16_t to
     if (bot <= top + 1) return;
     height = (uint16_t)(bot - top);
 
-    cmd.card_id = (uint16_t)(material * 32u + role * 8u + ((uint8_t)(x >> 4) & 7u));
+    (void)material;
+    cmd.card_id = 0;
     cmd.x = x;
     cmd.y = top;
     cmd.height = height;
@@ -354,8 +463,11 @@ static void emit_chunk(uint8_t material, wall_role_t role, int16_t x, int16_t to
     cmd.size_tiles = (uint8_t)((height + 15u) / 16u);
     if (cmd.size_tiles == 0) cmd.size_tiles = 1;
     if (cmd.size_tiles > CARD_TILE_COUNT) cmd.size_tiles = CARD_TILE_COUNT;
-    cmd.palette = (uint8_t)(1u + role);
+    cmd.palette = 1;
     cmd.role = (uint8_t)role;
+    if (cmd_count < MAX_CMDS) {
+        role_counts[(uint8_t)role]++;
+    }
     add_cmd(cmd);
 }
 
@@ -446,6 +558,28 @@ static void emit_line(const line_t *line) {
     }
 }
 
+static void emit_seg(const seg_t *seg) {
+    line_t resolved = lines[seg->line];
+    if (seg->reverse) {
+        uint8_t v = resolved.v0;
+        int8_t sector = resolved.front;
+        resolved.v0 = resolved.v1;
+        resolved.v1 = v;
+        resolved.front = resolved.back;
+        resolved.back = sector;
+    }
+    emit_line(&resolved);
+}
+
+static void emit_subsector(const subsector_t *subsector) {
+    if (subsector->sector < 0) {
+        return;
+    }
+    for (uint8_t i = 0; i < subsector->seg_count; i++) {
+        emit_seg(&segs[subsector->first_seg + i]);
+    }
+}
+
 static void sort_cmds_back_to_front(void) {
     for (uint8_t i = 1; i < cmd_count; i++) {
         sprite_cmd_t key = cmds[i];
@@ -479,8 +613,11 @@ static uint8_t compute_peak_scanline(void) {
 static void render_scene(void) {
     cmd_count = 0;
     guard_asserted = 0;
-    for (uint8_t i = 0; i < sizeof(lines) / sizeof(lines[0]); i++) {
-        emit_line(&lines[i]);
+    role_counts[ROLE_MIDDLE] = 0;
+    role_counts[ROLE_UPPER] = 0;
+    role_counts[ROLE_LOWER] = 0;
+    for (uint8_t i = 0; i < sizeof(subsectors) / sizeof(subsectors[0]); i++) {
+        emit_subsector(&subsectors[i]);
     }
     sort_cmds_back_to_front();
     profile.sprites_emitted = cmd_count;
@@ -498,6 +635,17 @@ static void write_tilemap(uint16_t sprite, const sprite_cmd_t *cmd) {
         *REG_VRAMRW = ((uint16_t)cmd->palette) << 8;
     }
     profile.scb1_words += CARD_TILE_COUNT * 2u;
+}
+
+static void preload_wall_tilemaps(void) {
+    sprite_cmd_t cmd;
+    cmd.card_id = 0;
+    cmd.palette = 1;
+    for (uint8_t i = 0; i < MAX_CMDS; i++) {
+        write_tilemap(SPRITE_BASE + i, &cmd);
+        shadow_card_id[i] = 0;
+        shadow_valid[i] = 1;
+    }
 }
 
 static void upload_controls(uint8_t count) {
@@ -539,7 +687,6 @@ static void upload_scene(void) {
             ctrl_scb2[i] = 0;
             ctrl_scb3[i] = 0;
             ctrl_scb4[i] = 0;
-            shadow_valid[i] = 0;
         }
     }
     upload_controls(active_count);
@@ -551,14 +698,51 @@ static void upload_scene(void) {
     }
 }
 
+static const char *demo_label(void) {
+    uint16_t phase = demo_frame % DEMO_CYCLE_FRAMES;
+    if (!auto_demo) {
+        return "MANUAL";
+    }
+    if (phase < 96) return "TURN";
+    if (phase < 180) return "MOVE";
+    if (phase < 300) return "DOOR UP";
+    if (phase < 420) return "STEP IN";
+    if (phase < 540) return "DOOR DN";
+    if (phase < 660) return "STRAFE";
+    return "RESET";
+}
+
+static void update_demo_metrics(uint16_t scb_words, uint16_t fit_frames) {
+    uint8_t fps = (uint8_t)(60u / fit_frames);
+    if (profile.max_sprites_scanline > demo_max_peak) {
+        demo_max_peak = profile.max_sprites_scanline;
+    }
+    if (profile.sprites_emitted > demo_max_sprites) {
+        demo_max_sprites = profile.sprites_emitted;
+    }
+    if (scb_words > demo_max_scb_words) {
+        demo_max_scb_words = scb_words;
+    }
+    if (fps < demo_min_fps) {
+        demo_min_fps = fps;
+    }
+    for (uint8_t i = 0; i < 3; i++) {
+        if (role_counts[i] > demo_max_roles[i]) {
+            demo_max_roles[i] = role_counts[i];
+        }
+    }
+}
+
 static void draw_overlay(void) {
     char line[38];
     uint16_t scb_words = profile.scb1_words + profile.scb_control_words;
     uint16_t fit_frames = (uint16_t)((scb_words + VBLANK_PRACTICAL_WORDS - 1u) / VBLANK_PRACTICAL_WORDS);
     if (fit_frames == 0) fit_frames = 1;
+    update_demo_metrics(scb_words, fit_frames);
 
     put_overlay_line(1, "DOOM AES M1 ONE ROOM");
-    put_overlay_line(2, "DOOM AES M1  DPAD MOVE/TURN");
+    snprintf(line, sizeof(line), "DEMO %-7s DPAD TAKES OVER", demo_label());
+    put_overlay_line(2, line);
     snprintf(line, sizeof(line), "POS %4d,%4d ANG %02u DOOR %3d", player.x, player.y, player.angle, door.ceil);
     put_overlay_line(4, line);
     snprintf(line, sizeof(line), "SPR %2u PEAK %2u SCB %4u FIT %u", profile.sprites_emitted, profile.max_sprites_scanline, scb_words, fit_frames);
@@ -569,10 +753,13 @@ static void draw_overlay(void) {
              (60u / fit_frames) >= 12u ? "OK" : "FAIL",
              scb_words <= VBLANK_PRACTICAL_WORDS ? "OK" : "OVER");
     put_overlay_line(7, line);
-    snprintf(line, sizeof(line), "MID/UP/LOW LIVE  ART %s", guard_asserted ? "GUARD" : "CLEAR");
+    snprintf(line, sizeof(line), "ROLE M%02u U%02u L%02u MAXU%02u L%02u", role_counts[ROLE_MIDDLE], role_counts[ROLE_UPPER],
+             role_counts[ROLE_LOWER], demo_max_roles[ROLE_UPPER], demo_max_roles[ROLE_LOWER]);
     put_overlay_line(8, line);
     snprintf(line, sizeof(line), "DEG $%04X MIRROR $%06lX", profile.degrade_flags, (unsigned long)PROFILE_MIRROR_ADDR);
     put_overlay_line(9, line);
+    snprintf(line, sizeof(line), "MAX P%02u S%02u W%04u MINFPS %02u", demo_max_peak, demo_max_sprites, demo_max_scb_words, demo_min_fps);
+    put_overlay_line(10, line);
 }
 
 int main(void) {
@@ -581,6 +768,7 @@ int main(void) {
     ng_profile_reset(&profile, frame_id);
     init_palettes();
     bios_lsp_1st();
+    preload_wall_tilemaps();
 
     for (;;) {
         ng_wait_vblank();

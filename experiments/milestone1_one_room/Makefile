@@ -142,7 +142,7 @@ mame-capture: $(CART) $(MAME_HASH) $(BIOS)
 	$(MAME) -cfg_directory $(BUILDDIR)/cfg -nvram_directory $(BUILDDIR)/nvram \
 		-snapshot_directory $(BUILDDIR)/snap -hashpath $(BUILDDIR) \
 		-rompath $(ROMDIR) neogeo $(GAMEROM) -skip_gameinfo -nothrottle \
-		-seconds_to_run 30 -autoboot_script tools/mame_capture.lua
+		-seconds_to_run 60 -autoboot_script tools/mame_capture.lua
 
 clean:
 	rm -rf $(BUILDDIR)

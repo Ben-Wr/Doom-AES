@@ -38,5 +38,5 @@ make -C experiments/milestone1_one_room mame-capture
 make -C experiments/milestone1_one_room mame-bench
 ```
 
-`mame-capture` saves a native MAME screenshot at
-`build/snap/m1_smoke.png`.
+`mame-capture` lets the built-in auto-demo exercise move/turn/strafe and the
+door, then saves a native MAME screenshot under `build/snap/neogeo/0000.png`.
