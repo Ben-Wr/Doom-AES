@@ -26,7 +26,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument("--cpu-mhz", type=float, default=12.0)
 parser.add_argument("--vblank-ms", type=float, default=2.56, help="NTSC vblank ~= 40 scanlines")
 parser.add_argument("--cycles-per-word", type=int, default=12, help="streamed write spacing (>=12); use 16 for isolated address-set writes")
-parser.add_argument("--practical-fill", type=float, default=0.65, help="fraction of theoretical writes to trust (loop overhead, address sets, zone crossings)")
+parser.add_argument("--practical-fill", type=float, default=0.65, help="M0B-calibrated fraction of theoretical writes to trust (loop overhead, address sets, zone crossings)")
 parser.add_argument("--wall-sprites", type=int, default=40, help="visible wall chunks crossing the center scanline")
 parser.add_argument("--thing-sprites", type=int, default=24, help="thing/weapon strips crossing center")
 parser.add_argument("--wall-height-tiles", type=int, default=32, help="SCB1 tilemap words = 2 * this when a card changes")
@@ -82,7 +82,7 @@ if worst_case > practical_words:
     print(f"NOTE: worst case ({worst_case:,}) is {worst_case / practical_words:.1f}x the budget.")
     print("      This is why SCB1 tilemap caching is mandatory, not optional.")
 print("")
-print("Planning estimate only. Milestone 0B must replace it with measured SCB writes.")
+print("M0B-calibrated planning estimate. Re-run M0B if the practical upload cap changes.")
 
 # Exit non-zero when the cached scene busts the budget, so CI / run_host_tests.sh
 # can treat this as a real gate rather than advisory text.

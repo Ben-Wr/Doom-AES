@@ -13,6 +13,7 @@
 #define WALL_SPRITES 40u
 #define THING_SPRITES 24u
 #define PROFILE_MIRROR_ADDR 0x10e040u
+#define SWEEP_HOLD_FRAMES 96u
 
 #define STREAM_CYCLES_PER_WORD 12u
 #define ADDR_SET_CYCLES 16u
@@ -40,17 +41,46 @@ typedef struct m0b_state_t {
     m0b_mode_t mode;
     u16 target;
     u8 artifact_observed;
-    u8 frame_phase;
+    u8 auto_sweep;
+    u8 sweep_index;
+    u16 sweep_frame;
 } m0b_state_t;
+
+typedef struct sweep_case_t {
+    m0b_mode_t mode;
+    u16 target;
+    const char *label;
+} sweep_case_t;
 
 static const char * const mode_names[] = {
     "FULL", "CTRL", "MIXED", "ACTIVE"
 };
 
+static const sweep_case_t sweep_cases[] = {
+    { MODE_MIXED, 10, "C 40W25 24T" },
+    { MODE_FULL, 24, "A FULL 1608" },
+    { MODE_FULL, 25, "A FULL 1675" },
+    { MODE_FULL, 38, "A FULL 2546" },
+    { MODE_FULL, 39, "A FULL 2613" },
+    { MODE_CTRL, 320, "B CTRL 960" },
+    { MODE_ACTIVE, 24, "D ACT 1608" },
+    { MODE_ACTIVE, 25, "D ACT 1675" },
+    { MODE_ACTIVE, 38, "D ACT 2546" },
+    { MODE_ACTIVE, 39, "D ACT 2613" }
+};
+
+#define SWEEP_CASE_COUNT ((u8)(sizeof(sweep_cases) / sizeof(sweep_cases[0])))
+
 static m0b_state_t state;
 static ng_profile_frame_t profile;
 static upload_stats_t stats;
 static u16 frame_id;
+
+static void apply_sweep_case(void) {
+    const sweep_case_t *sweep = &sweep_cases[state.sweep_index % SWEEP_CASE_COUNT];
+    state.mode = sweep->mode;
+    state.target = sweep->target;
+}
 
 static u16 max_target_for_mode(m0b_mode_t mode) {
     switch (mode) {
@@ -83,10 +113,11 @@ static u16 default_target_for_mode(m0b_mode_t mode) {
 }
 
 static void reset_state(void) {
-    state.mode = MODE_MIXED;
-    state.target = default_target_for_mode(state.mode);
     state.artifact_observed = 0;
-    state.frame_phase = 0;
+    state.auto_sweep = 1;
+    state.sweep_index = 0;
+    state.sweep_frame = 0;
+    apply_sweep_case();
 }
 
 static void reset_stats(void) {
@@ -123,9 +154,23 @@ static void finish_stats(void) {
 static void copy_profile_to_mirror(void) {
     volatile u16 *dst = (volatile u16 *)PROFILE_MIRROR_ADDR;
     const u16 *src = (const u16 *)&profile;
-    for (u16 i = 0; i < sizeof(profile) / sizeof(u16); i++) {
+    u16 i = 0;
+    for (; i < sizeof(profile) / sizeof(u16); i++) {
         dst[i] = src[i];
     }
+    dst[i++] = (u16)state.mode;
+    dst[i++] = state.target;
+    dst[i++] = stats.words;
+    dst[i++] = stats.addr_sets;
+    dst[i++] = stats.cpw_x10;
+    dst[i++] = stats.frames_to_fit;
+    dst[i++] = stats.safe_fps;
+    dst[i++] = state.auto_sweep;
+    dst[i++] = state.sweep_index;
+    dst[i++] = state.sweep_frame;
+    dst[i++] = (u16)(stats.words > VBLANK_PRACTICAL_WORDS);
+    dst[i++] = (u16)(stats.words > VBLANK_THEORETICAL_WORDS);
+    dst[i++] = state.artifact_observed;
 }
 
 static void init_palettes(void) {
@@ -239,7 +284,30 @@ static void run_upload(void) {
     finish_stats();
 }
 
+static void advance_auto_sweep(void) {
+    if (!state.auto_sweep) {
+        return;
+    }
+
+    apply_sweep_case();
+    state.sweep_frame++;
+    if (state.sweep_frame >= SWEEP_HOLD_FRAMES) {
+        state.sweep_frame = 0;
+        state.sweep_index = (u8)((state.sweep_index + 1u) % SWEEP_CASE_COUNT);
+        apply_sweep_case();
+    }
+}
+
 static void update_controls(void) {
+    if (bios_statchange & CNT_START1) {
+        reset_state();
+        return;
+    }
+
+    if (bios_p1change & (CNT_A | CNT_B | CNT_C | CNT_D)) {
+        state.auto_sweep = 0;
+    }
+
     if (bios_p1change & CNT_A) {
         state.mode = (m0b_mode_t)((state.mode + 1u) & 3u);
         state.target = default_target_for_mode(state.mode);
@@ -264,9 +332,6 @@ static void update_controls(void) {
     if (bios_p1change & CNT_D) {
         state.artifact_observed ^= 1u;
     }
-    if (bios_statchange & CNT_START1) {
-        reset_state();
-    }
 }
 
 static void put_overlay_line(u8 row, const char *text) {
@@ -289,15 +354,20 @@ static void draw_overlay(void) {
     const u16 over_practical = stats.words > VBLANK_PRACTICAL_WORDS;
     const u16 over_theoretical = stats.words > VBLANK_THEORETICAL_WORDS;
 
-    put_overlay_line(2, "DOOM AES M0B VRAM UPLOAD");
+    put_overlay_line(1, "DOOM AES M0B");
+    put_overlay_line(2, "DOOM AES VRAM UPLOAD BENCH");
     put_overlay_line(3, "A:MODE B:+ C:- D:ART START:RST");
 
     snprintf(line, sizeof(line), "MODE %-6s TARGET %3u", mode_names[state.mode], state.target);
     put_overlay_line(5, line);
-    snprintf(line, sizeof(line), "WORDS %4u SCB1 %4u CTRL %4u", stats.words, profile.scb1_words, profile.scb_control_words);
+    snprintf(line, sizeof(line), "SWEEP %s %02u/%02u %-12s", state.auto_sweep ? "AUTO" : "MAN ",
+             (u16)(state.sweep_index + 1u), (u16)SWEEP_CASE_COUNT,
+             state.auto_sweep ? sweep_cases[state.sweep_index].label : "BUTTONS");
     put_overlay_line(6, line);
-    snprintf(line, sizeof(line), "ADDR %3u  CYC %5lu  C/W %2u.%u", stats.addr_sets, (unsigned long)(stats.cycles_x10 / 10u), stats.cpw_x10 / 10u, stats.cpw_x10 % 10u);
+    snprintf(line, sizeof(line), "WORDS %4u SCB1 %4u CTRL %4u", stats.words, profile.scb1_words, profile.scb_control_words);
     put_overlay_line(7, line);
+    snprintf(line, sizeof(line), "ADDR %3u  CYC %5lu  C/W %2u.%u", stats.addr_sets, (unsigned long)(stats.cycles_x10 / 10u), stats.cpw_x10 / 10u, stats.cpw_x10 % 10u);
+    put_overlay_line(8, line);
     snprintf(line, sizeof(line), "VB PRACT %4u THEO %4u", VBLANK_PRACTICAL_WORDS, VBLANK_THEORETICAL_WORDS);
     put_overlay_line(9, line);
     snprintf(line, sizeof(line), "OVER P:%u T:%u  FIT %uF FPS %2u", over_practical, over_theoretical, stats.frames_to_fit, stats.safe_fps);
@@ -322,6 +392,7 @@ int main(void) {
         profile.max_sprites_scanline = 1;
 
         update_controls();
+        advance_auto_sweep();
         run_upload();
 
         profile.upload_ticks = (u16)(stats.cycles_x10 / 10u);

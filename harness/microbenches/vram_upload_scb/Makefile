@@ -135,7 +135,16 @@ mame-bench: $(CART) $(MAME_HASH) $(BIOS)
 		-snapshot_directory $(BUILDDIR)/snap -hashpath $(BUILDDIR) \
 		-rompath $(ROMDIR) neogeo $(GAMEROM) -bench 3 -skip_gameinfo
 
+mame-capture: $(CART) $(MAME_HASH) $(BIOS)
+	rm -rf $(BUILDDIR)/snap
+	mkdir -p $(BUILDDIR)/snap
+	rm -f $(BUILDDIR)/m0b_capture.tsv
+	$(MAME) -cfg_directory $(BUILDDIR)/cfg -nvram_directory $(BUILDDIR)/nvram \
+		-snapshot_directory $(BUILDDIR)/snap -hashpath $(BUILDDIR) \
+		-rompath $(ROMDIR) neogeo $(GAMEROM) -skip_gameinfo -nothrottle \
+		-seconds_to_run 120 -autoboot_script tools/mame_capture.lua
+
 clean:
 	rm -rf $(BUILDDIR)
 
-.PHONY: all gngeo mame mame-bench clean
+.PHONY: all gngeo mame mame-bench mame-capture clean
