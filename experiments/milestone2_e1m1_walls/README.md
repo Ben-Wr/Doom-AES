@@ -23,10 +23,11 @@ Work log:
 [x] generated C header for ROM-side experiments
 [x] generated SVG map preview for visual inspection
 [ ] ZDBSP/glBSP node rebuild integration
+[x] placeholder-wall ROM consumes generated E1M1 map header
+[x] BSP traversal + seg projection + chunk LOD by distance/pressure
+[x] upper/middle/lower wall emission from real E1M1 sectors/sidedefs
+[x] deterministic first-pass degrade ladder (bucket merge before sprite overflow)
 wall texture composition (TEXTURE1/PNAMES) -> 16px U cards + phases + light palettes
-full BSP traversal + seg projection + chunk LOD by distance/pressure
-upper/middle/lower wall emission; doors/stairs/windows
-deterministic degrade ladder (merge far chunks, widen, drop optional features)
 worst-case-scene regression suite seeded from E1M1's nastiest sightlines
 budget reports per scene (fps, peak sprites/line, SCB words, RAM)
 ```
@@ -37,6 +38,8 @@ Compile the local ignored IWAD:
 
 ```sh
 make -C experiments/milestone2_e1m1_walls WAD=../../iwads/DOOM1.WAD compile-map
+make -C experiments/milestone2_e1m1_walls WAD=../../iwads/DOOM1.WAD
+make -C experiments/milestone2_e1m1_walls WAD=../../iwads/DOOM1.WAD mame-capture
 ```
 
 Generated WAD-derived outputs stay under `build/` and must not be committed.

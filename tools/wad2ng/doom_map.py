@@ -493,6 +493,7 @@ def write_c_header(doom_map: DoomMap, path: Path) -> None:
         "typedef struct { uint16_t v1; uint16_t v2; uint16_t flags; uint16_t special; uint16_t tag; int16_t right; int16_t left; } m2_linedef_t;",
         "typedef struct { uint16_t v1; uint16_t v2; int16_t angle; uint16_t linedef; int16_t side; int16_t offset; } m2_seg_t;",
         "typedef struct { uint16_t seg_count; uint16_t first_seg; } m2_subsector_t;",
+        "typedef struct { int16_t x; int16_t y; int16_t dx; int16_t dy; int16_t bbox[2][4]; uint16_t child[2]; } m2_node_t;",
         "",
         "static const m2_vertex_t m2_vertices[] = {",
     ]
@@ -544,6 +545,28 @@ def write_c_header(doom_map: DoomMap, path: Path) -> None:
     lines.append("")
     lines.append("static const m2_subsector_t m2_subsectors[] = {")
     lines.extend(f"    {{ {sub.seg_count}u, {sub.first_seg}u }}," for sub in doom_map.subsectors)
+    lines.append("};")
+    lines.append("")
+    lines.append("static const m2_node_t m2_nodes[] = {")
+    lines.extend(
+        "    {{ {x}, {y}, {dx}, {dy}, {{ {{ {b00}, {b01}, {b02}, {b03} }}, {{ {b10}, {b11}, {b12}, {b13} }} }}, {{ {c0}u, {c1}u }} }},".format(
+            x=node.x,
+            y=node.y,
+            dx=node.dx,
+            dy=node.dy,
+            b00=node.bbox[0][0],
+            b01=node.bbox[0][1],
+            b02=node.bbox[0][2],
+            b03=node.bbox[0][3],
+            b10=node.bbox[1][0],
+            b11=node.bbox[1][1],
+            b12=node.bbox[1][2],
+            b13=node.bbox[1][3],
+            c0=node.child[0],
+            c1=node.child[1],
+        )
+        for node in doom_map.nodes
+    )
     lines.append("};")
     lines.append("")
     lines.append("#endif")
