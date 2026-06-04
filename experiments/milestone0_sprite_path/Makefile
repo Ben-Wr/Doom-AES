@@ -54,7 +54,7 @@ CROM1 := $(ROMDIR)/m0a-c1.c1
 CROM2 := $(ROMDIR)/m0a-c2.c2
 CART := $(ROMDIR)/$(GAMEROM).zip
 NEO := $(BUILDDIR)/$(GAMEROM).neo
-MAME_HASH := $(BUILDDIR)/$(GAMEROM).xml
+MAME_HASH := $(BUILDDIR)/neogeo.xml
 GNGEO_DATA := $(BUILDDIR)/gngeo_data.zip
 BIOS := $(ROMDIR)/neogeo.zip
 
@@ -126,10 +126,17 @@ $(GNGEO_DATA): $(PROM1) $(MROM1) $(VROM1) $(SROM1) $(CROM1) $(CROM2) | $(BUILDDI
 gngeo: $(CART) $(GNGEO_DATA) $(BIOS)
 	$(GNGEO) -d $(GNGEO_DATA) -i $(ROMDIR) $(GAMEROM)
 
-mame: $(CART)
-	$(MAME) neogeo -cart $(CART)
+mame: $(CART) $(MAME_HASH) $(BIOS)
+	$(MAME) -cfg_directory $(BUILDDIR)/cfg -nvram_directory $(BUILDDIR)/nvram \
+		-snapshot_directory $(BUILDDIR)/snap -hashpath $(BUILDDIR) \
+		-rompath $(ROMDIR) neogeo $(GAMEROM)
+
+mame-bench: $(CART) $(MAME_HASH) $(BIOS)
+	$(MAME) -cfg_directory $(BUILDDIR)/cfg -nvram_directory $(BUILDDIR)/nvram \
+		-snapshot_directory $(BUILDDIR)/snap -hashpath $(BUILDDIR) \
+		-rompath $(ROMDIR) neogeo $(GAMEROM) -bench 3 -skip_gameinfo
 
 clean:
 	rm -rf $(BUILDDIR)
 
-.PHONY: all gngeo mame clean
+.PHONY: all gngeo mame mame-bench clean

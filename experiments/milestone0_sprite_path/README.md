@@ -38,7 +38,7 @@ Outputs:
 build/m0a.neo                 milestone-named cartridge zip copy
 build/rom/m0a.zip             ROM zip for MAME/GnGeo-style launchers
 build/rom/neogeo.zip          generated ngdevkit null BIOS copy for local GnGeo
-build/m0a.xml                 generated MAME software-list entry
+build/neogeo.xml              generated MAME software-list entry for m0a
 build/gngeo_data.zip          generated GnGeo driver data with the m0a entry
 ```
 

@@ -29,6 +29,11 @@ external/*
 references/neogeodev/html/
 references/neogeodev/md/
 
+# Local emulator runtime state
+cfg/
+nvram/
+snap/
+
 # OS/editor noise
 .DS_Store
 .idea/
