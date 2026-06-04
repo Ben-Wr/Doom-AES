@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.wad2ng.cli import command_compile_map, command_compile_wall_atlas
-from tools.wad2ng.doom_map import MAP_BANK_MAGIC, MAP_BANK_VERSION
+from tools.wad2ng.doom_map import MAP_BANK_MAGIC, MAP_BANK_VERSION, MAP_HEADER_FORMAT
 from tools.wad2ng.wad import Wad
 
 
@@ -42,11 +42,11 @@ def pnames_lump() -> bytes:
     return struct.pack("<i8s", 1, b"PATCHA\0\0")
 
 
-def texture1_lump() -> bytes:
+def texture1_lump(patch_index: int = 0) -> bytes:
     texture_offset = 8
     header = struct.pack("<iI", 1, texture_offset)
     texture = struct.pack("<8sihhiH", b"STARTAN3", 0, 64, 64, 0, 1)
-    patch = struct.pack("<hhhhh", 0, 0, 0, 0, 0)
+    patch = struct.pack("<hhhhh", 0, 0, patch_index, 0, 0)
     return header + texture + patch
 
 
@@ -58,7 +58,7 @@ def sidedef_lump(sector: int = 0) -> bytes:
     return struct.pack("<hh8s8s8sh", 0, 0, b"-\0", b"-\0", b"STARTAN3", sector)
 
 
-def make_wad(path: Path) -> None:
+def make_wad(path: Path, texture_patch_index: int = 0) -> None:
     things = struct.pack("<hhhhh", 128, 64, 90, 1, 7)
     vertices = b"".join(
         struct.pack("<hh", x, y)
@@ -84,7 +84,7 @@ def make_wad(path: Path) -> None:
     lumps = [
         ("PLAYPAL", playpal_lump()),
         ("PNAMES", pnames_lump()),
-        ("TEXTURE1", texture1_lump()),
+        ("TEXTURE1", texture1_lump(texture_patch_index)),
         ("P_START", b""),
         ("PATCHA", patch_lump()),
         ("P_END", b""),
@@ -142,15 +142,15 @@ def main() -> int:
     assert report["player_starts"][0]["x"] == 128
 
     bank = (out / "e1m1_map_bank.bin").read_bytes()
-    header_fmt = ">8sHHHHHHHHHHhhhhhhh"
-    header_size = struct.calcsize(header_fmt)
-    header = struct.unpack_from(header_fmt, bank, 0)
+    header_size = struct.calcsize(MAP_HEADER_FORMAT)
+    header = struct.unpack_from(MAP_HEADER_FORMAT, bank, 0)
     assert header[0] == MAP_BANK_MAGIC
     assert header[1] == MAP_BANK_VERSION
     assert header[2] == 4
     assert header[15] == 128
     assert header[16] == 64
     assert header[17] == 90
+    assert report["estimated_bank_bytes"] == report["actual_bank_bytes"] == len(bank)
     first_vertex = struct.unpack_from(">ii", bank, header_size)
     second_vertex = struct.unpack_from(">ii", bank, header_size + 8)
     assert first_vertex == (0, 0)
@@ -167,6 +167,20 @@ def main() -> int:
     assert (out / "e1m1_wall_cards.gif").exists()
     wall_header_text = (out / "e1m1_wall_cards.h").read_text()
     assert "#define M2_WALL_CARD_COUNT 4u" in wall_header_text
+
+    bad_wad_path = root / "BAD_PATCH.WAD"
+    bad_out = root / "bad_out"
+    make_wad(bad_wad_path, texture_patch_index=7)
+    bad_args = Args()
+    bad_args.wad = str(bad_wad_path)
+    bad_args.out = str(bad_out)
+    try:
+        command_compile_wall_atlas(bad_args)
+    except ValueError as exc:
+        assert "invalid PNAMES index 7" in str(exc)
+    else:
+        raise AssertionError("invalid texture patch index did not fail wall atlas compilation")
+
     print("synthetic wad2ng map compile test passed")
     return 0
 

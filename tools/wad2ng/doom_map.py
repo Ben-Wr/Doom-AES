@@ -12,6 +12,17 @@ from .wad import MAP_LUMPS, Lump, Wad
 
 MAP_BANK_MAGIC = b"NGM2MAP1"
 MAP_BANK_VERSION = 2
+MAP_HEADER_FORMAT = ">8sHHHHHHHHHHhhhhhhh"
+MAP_HEADER_BYTES = struct.calcsize(MAP_HEADER_FORMAT)
+VERTEX_BYTES = struct.calcsize(">ii")
+SECTOR_BYTES = struct.calcsize(">hhHHH")
+SIDEDEF_BYTES = struct.calcsize(">hhHHHh")
+LINEDEF_BYTES = struct.calcsize(">HHHHHhh")
+SEG_BYTES = struct.calcsize(">HHhHhhH")
+SUBSECTOR_BYTES = struct.calcsize(">HH")
+NODE_BYTES = struct.calcsize(">hhhhhhhhhhhhHH")
+THING_BYTES = struct.calcsize(">hhHHH")
+TEXTURE_NAME_BYTES = 8
 
 
 @dataclass(frozen=True)
@@ -342,16 +353,16 @@ def _texture_id(texture: str, lookup: dict[str, int]) -> int:
 
 def estimate_bank_bytes(doom_map: DoomMap) -> int:
     return (
-        64
-        + len(doom_map.vertices) * 8
-        + len(doom_map.sectors) * 10
-        + len(doom_map.sidedefs) * 14
-        + len(doom_map.linedefs) * 14
-        + len(doom_map.segs) * 14
-        + len(doom_map.subsectors) * 4
-        + len(doom_map.nodes) * 28
-        + len(doom_map.things) * 10
-        + len(texture_table(doom_map)) * 8
+        MAP_HEADER_BYTES
+        + len(doom_map.vertices) * VERTEX_BYTES
+        + len(doom_map.sectors) * SECTOR_BYTES
+        + len(doom_map.sidedefs) * SIDEDEF_BYTES
+        + len(doom_map.linedefs) * LINEDEF_BYTES
+        + len(doom_map.segs) * SEG_BYTES
+        + len(doom_map.subsectors) * SUBSECTOR_BYTES
+        + len(doom_map.nodes) * NODE_BYTES
+        + len(doom_map.things) * THING_BYTES
+        + len(texture_table(doom_map)) * TEXTURE_NAME_BYTES
     )
 
 
@@ -366,7 +377,7 @@ def write_binary_bank(doom_map: DoomMap, path: Path) -> None:
     chunks: list[bytes] = []
     chunks.append(
         struct.pack(
-            ">8sHHHHHHHHHHhhhhhhh",
+            MAP_HEADER_FORMAT,
             MAP_BANK_MAGIC,
             MAP_BANK_VERSION,
             len(doom_map.vertices),

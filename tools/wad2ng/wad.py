@@ -38,6 +38,12 @@ class Wad:
         self.magic = magic.decode("ascii", errors="replace")
         if self.magic not in {"IWAD", "PWAD"}:
             raise ValueError(f"unsupported WAD magic {self.magic!r}")
+        if lump_count < 0:
+            raise ValueError("WAD lump count is negative")
+        if directory_offset < 0:
+            raise ValueError("WAD directory offset is negative")
+        if directory_offset + lump_count * 16 > len(self.data):
+            raise ValueError("WAD directory extends past end of file")
         self.lump_count = lump_count
         self.directory_offset = directory_offset
         self.lumps = self._read_directory()
@@ -50,10 +56,18 @@ class Wad:
                 raise ValueError("WAD directory extends past end of file")
             offset, size, raw_name = struct.unpack_from("<ii8s", self.data, pos)
             name = raw_name.split(b"\0", 1)[0].decode("ascii", errors="replace").upper()
+            if offset < 0:
+                raise ValueError(f"lump {name or index!r} has negative offset")
+            if size < 0:
+                raise ValueError(f"lump {name or index!r} has negative size")
+            if offset > len(self.data) or offset + size > len(self.data):
+                raise ValueError(f"lump {name or index!r} extends past end of file")
             lumps.append(Lump(index=index, name=name, offset=offset, size=size))
         return lumps
 
     def read_lump(self, lump: Lump) -> bytes:
+        if lump.offset < 0 or lump.size < 0 or lump.offset + lump.size > len(self.data):
+            raise ValueError(f"lump {lump.name!r} extends past end of file")
         return self.data[lump.offset : lump.offset + lump.size]
 
     def find_one(self, name: str) -> Lump | None:
@@ -112,4 +126,3 @@ class Wad:
             "namespaces": namespaces,
             "has_playpal": self.find_one("PLAYPAL") is not None,
         }
-

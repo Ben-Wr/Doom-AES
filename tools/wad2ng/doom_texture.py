@@ -112,15 +112,20 @@ def alpha_composite_clipped(base: Image.Image, patch: Image.Image, x: int, y: in
 
 def compose_texture(texture: WallTexture, patch_names: list[str], patches: dict[str, bytes], palette: list[tuple[int, int, int]]) -> Image.Image:
     image = Image.new("RGBA", (max(1, texture.width), max(1, texture.height)), (0, 0, 0, 0))
+    patch_errors = []
     for patch in texture.patches:
         if patch.patch_index < 0 or patch.patch_index >= len(patch_names):
+            patch_errors.append(f"{texture.name}: invalid PNAMES index {patch.patch_index}")
             continue
         patch_name = patch_names[patch.patch_index]
         patch_data = patches.get(patch_name)
         if patch_data is None:
+            patch_errors.append(f"{texture.name}: missing patch lump {patch_name}")
             continue
         patch_image, _info = render_picture(patch_data, palette)
         alpha_composite_clipped(image, patch_image, patch.x, patch.y)
+    if patch_errors:
+        raise ValueError("texture patch composition failed: " + "; ".join(patch_errors))
     return image
 
 

@@ -59,6 +59,12 @@ def make_wad(path: Path) -> None:
             f.write(struct.pack("<ii8s", *entry))
 
 
+def make_bad_bounds_wad(path: Path) -> None:
+    header = struct.pack("<4sii", b"IWAD", 1, 12)
+    directory = struct.pack("<ii8s", 4096, 4, b"BROKEN\0\0")
+    path.write_bytes(header + directory)
+
+
 def main() -> int:
     root = Path("tmp/wad2ng_synthetic")
     if root.exists():
@@ -81,6 +87,16 @@ def main() -> int:
     manifest = json.loads((out / "manifests" / "graphics_manifest.json").read_text())
     assert len(manifest["assets"]) == 1
     assert manifest["assets"][0]["planned"]["strip_count"] == 1
+
+    bad_wad_path = root / "BAD_BOUNDS.WAD"
+    make_bad_bounds_wad(bad_wad_path)
+    try:
+        Wad(bad_wad_path)
+    except ValueError as exc:
+        assert "extends past end of file" in str(exc)
+    else:
+        raise AssertionError("out-of-bounds lump did not fail WAD validation")
+
     print("synthetic wad2ng test passed")
     return 0
 

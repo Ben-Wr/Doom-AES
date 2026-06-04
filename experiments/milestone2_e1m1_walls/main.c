@@ -5,8 +5,16 @@
 #include <stdio.h>
 
 #include "ng_profile.h"
-#include "e1m1_map_data.h"
-#include "e1m1_wall_cards.h"
+
+#ifndef M2_MAP_HEADER
+#define M2_MAP_HEADER "e1m1_map_data.h"
+#endif
+#ifndef M2_WALL_CARDS_HEADER
+#define M2_WALL_CARDS_HEADER "e1m1_wall_cards.h"
+#endif
+
+#include M2_MAP_HEADER
+#include M2_WALL_CARDS_HEADER
 
 #define CARD_START_TILE 256u
 #define CARD_TILE_COUNT 32u
@@ -31,7 +39,8 @@
 #define VBLANK_PRACTICAL_WORDS 1664u
 #define STREAM_CYCLES_PER_WORD 12u
 #define ADDR_SET_CYCLES 16u
-#define RAM_HWM_BYTES 55296u
+#define RAM_START_ADDR 0x100000u
+#define RAM_STACK_TOP_ADDR 0x10f300u
 #define BSP_MAX_DEPTH 64u
 #define OCC_BUCKETS 32u
 #define DEMO_CYCLE_FRAMES 960u
@@ -43,6 +52,8 @@
 #define FAMILY_TEXTURE_LOD 5u
 #define FAMILY_TEXTURE_Z 760u
 #define FRUSTUM_MARGIN_PX 64
+#define WALL_STRIP_WIDTH 16u
+#define OVERLAY_UPDATE_MASK 3u
 
 typedef enum wall_role_t {
     ROLE_MIDDLE = 0,
@@ -104,11 +115,14 @@ static uint8_t max_peak;
 static uint8_t max_sprites;
 static uint16_t max_scb_words;
 static uint8_t min_fps;
+static uint16_t ram_high_water_bytes;
 static uint16_t segs_visited;
 static uint16_t subsectors_visited;
 static uint16_t nodes_visited;
 static uint16_t nodes_culled;
 static uint8_t guard_asserted;
+
+extern uint8_t _end;
 
 static const uint8_t lod_bucket_sizes[RENDER_PASS_COUNT] = {
     16, 24, 32, 48, 64, 80
@@ -159,6 +173,51 @@ static void copy_profile_to_mirror(void) {
     }
 }
 
+static uint32_t current_stack_pointer(void) {
+#if defined(__m68k__)
+    uint32_t sp;
+    __asm__ volatile("move.l %%sp,%0" : "=r"(sp));
+    return sp;
+#else
+    uint16_t stack_probe;
+    return (uint32_t)(uintptr_t)&stack_probe;
+#endif
+}
+
+static uint16_t current_ram_used_bytes(void) {
+    uint32_t static_end = (uint32_t)(uintptr_t)&_end;
+    uint32_t sp = current_stack_pointer();
+    uint32_t static_bytes = 0;
+    uint32_t stack_bytes = 0;
+    uint32_t used;
+
+    if (static_end > RAM_START_ADDR) {
+        static_bytes = static_end - RAM_START_ADDR;
+    }
+    if (static_end > RAM_STACK_TOP_ADDR) {
+        static_bytes = RAM_STACK_TOP_ADDR - RAM_START_ADDR;
+    }
+    if (sp < RAM_STACK_TOP_ADDR && sp > RAM_START_ADDR) {
+        stack_bytes = RAM_STACK_TOP_ADDR - sp;
+    } else if (sp <= RAM_START_ADDR) {
+        stack_bytes = RAM_STACK_TOP_ADDR - RAM_START_ADDR;
+    }
+
+    used = static_bytes + stack_bytes;
+    if (used > 0xffffu) {
+        used = 0xffffu;
+    }
+    return (uint16_t)used;
+}
+
+static void update_ram_high_water(void) {
+    uint16_t used = current_ram_used_bytes();
+    if (used > ram_high_water_bytes) {
+        ram_high_water_bytes = used;
+    }
+    profile.ram_high_water_bytes = ram_high_water_bytes;
+}
+
 static void put_overlay_line(uint8_t row, const char *text) {
     char line[38];
     uint8_t i = 0;
@@ -198,7 +257,6 @@ static void reset_state(void) {
     player.y = M2_PLAYER_START_Y;
     player.angle = (uint8_t)(((uint32_t)M2_PLAYER_START_ANGLE * 64u) / 360u);
     cmd_count = 0;
-    last_cmd_count = 0;
     global_lod = 0;
     bucket_size = 16;
     auto_demo = 1;
@@ -209,13 +267,14 @@ static void reset_state(void) {
     max_scb1_rewrites = 0;
     max_scb1_deferred = 0;
     min_fps = 60;
+    last_cmd_count = MAX_CMDS;
     for (uint8_t i = 0; i < 3; i++) {
         max_roles[i] = 0;
         role_counts[i] = 0;
     }
     for (uint8_t i = 0; i < MAX_CMDS; i++) {
         shadow_card_id[i] = 0;
-        shadow_valid[i] = 1;
+        shadow_valid[i] = 0;
     }
 }
 
@@ -453,6 +512,18 @@ static uint16_t select_wall_card(uint16_t texture_id, uint16_t u_offset, uint16_
     return (uint16_t)(base + (((uint16_t)(u_offset >> shift)) % count));
 }
 
+static void clip_endpoint_to_near(int32_t *side, int32_t *z, int32_t *u, int32_t other_side, int32_t other_z, int32_t other_u) {
+    int32_t denom = other_z - *z;
+    int32_t numer;
+    if (denom == 0) {
+        return;
+    }
+    numer = NEAR_Z - *z;
+    *side += ((other_side - *side) * numer) / denom;
+    *u += ((other_u - *u) * numer) / denom;
+    *z = NEAR_Z;
+}
+
 static void emit_chunk(uint16_t texture_id, wall_role_t role, int16_t x, int16_t top, uint16_t height, uint16_t depth, uint8_t width, uint16_t u_offset) {
     sprite_cmd_t cmd;
     int16_t bot;
@@ -498,45 +569,68 @@ static void emit_wall_role(uint16_t texture_id, int16_t texture_xoff, int16_t se
     int32_t dy1 = vertex_y(v1_index) - player.y;
     int32_t z0 = (dx0 * c + dy0 * s) >> 8;
     int32_t z1 = (dx1 * c + dy1 * s) >> 8;
-    int32_t sx0;
-    int32_t sx1;
+    int32_t side0;
+    int32_t side1;
+    int32_t u0;
+    int32_t u1;
     int16_t x0;
     int16_t x1;
+    int16_t unclipped_left;
+    int16_t unclipped_right;
     int16_t left;
     int16_t right;
     uint16_t depth;
-    uint16_t screen_span;
-    uint32_t u_acc;
-    uint32_t u_step;
+    int32_t screen_span;
+    int32_t u_left;
+    int32_t u_right;
+    int32_t u_acc;
+    int32_t u_step;
     int16_t top;
     int16_t bot;
 
     if (ceil <= floor || (z0 <= NEAR_Z && z1 <= NEAR_Z)) {
         return;
     }
-    if (z0 <= NEAR_Z || z1 <= NEAR_Z) {
+    if (wall_length == 0) {
+        wall_length = 1;
+    }
+
+    side0 = ((dx0 * right_x + dy0 * right_y) >> 8);
+    side1 = ((dx1 * right_x + dy1 * right_y) >> 8);
+    u0 = ((int32_t)texture_xoff + (int32_t)seg_offset) << 8;
+    u1 = u0 + ((int32_t)wall_length << 8);
+
+    if (z0 <= NEAR_Z) {
+        clip_endpoint_to_near(&side0, &z0, &u0, side1, z1, u1);
+    }
+    if (z1 <= NEAR_Z) {
+        clip_endpoint_to_near(&side1, &z1, &u1, side0, z0, u0);
+    }
+    if (z0 <= 0 || z1 <= 0) {
         return;
     }
 
-    sx0 = ((dx0 * right_x + dy0 * right_y) >> 8);
-    sx1 = ((dx1 * right_x + dy1 * right_y) >> 8);
-    x0 = (int16_t)(SCREEN_W / 2 + (sx0 * FOCAL) / z0);
-    x1 = (int16_t)(SCREEN_W / 2 + (sx1 * FOCAL) / z1);
+    x0 = (int16_t)(SCREEN_W / 2 + (side0 * FOCAL) / z0);
+    x1 = (int16_t)(SCREEN_W / 2 + (side1 * FOCAL) / z1);
     if (x0 == x1) {
         return;
     }
     if (x0 < x1) {
-        left = x0;
-        right = x1;
+        unclipped_left = x0;
+        unclipped_right = x1;
+        u_left = u0;
+        u_right = u1;
     } else {
-        left = x1;
-        right = x0;
+        unclipped_left = x1;
+        unclipped_right = x0;
+        u_left = u1;
+        u_right = u0;
     }
-    if (right < 0 || left >= SCREEN_W) {
+    if (unclipped_right < 0 || unclipped_left >= SCREEN_W) {
         return;
     }
-    left = clamp_i16(left, 0, SCREEN_W - 1);
-    right = clamp_i16(right, 0, SCREEN_W);
+    left = clamp_i16(unclipped_left, 0, SCREEN_W - 1);
+    right = clamp_i16(unclipped_right, 0, SCREEN_W);
     if (right <= left) {
         return;
     }
@@ -551,19 +645,19 @@ static void emit_wall_role(uint16_t texture_id, int16_t texture_xoff, int16_t se
         return;
     }
 
-    screen_span = (uint16_t)(right - left);
-    if (wall_length == 0) {
-        wall_length = 1;
+    screen_span = (int32_t)unclipped_right - unclipped_left;
+    if (screen_span <= 0) {
+        return;
     }
-    u_acc = ((uint32_t)((uint16_t)(texture_xoff + seg_offset))) << 8;
-    u_step = (((uint32_t)wall_length * bucket_size) << 8) / screen_span;
-    if (u_step == 0) {
-        u_step = 1u << 8;
+    u_step = (u_right - u_left) / screen_span;
+    if (u_step == 0 && u_right != u_left) {
+        u_step = (u_right > u_left) ? 1 : -1;
     }
-    for (int16_t x = left; x < right; x += bucket_size) {
-        uint8_t width = (uint8_t)((right - x) >= 16 ? 16 : (right - x));
+    u_acc = u_left + u_step * ((int32_t)left - unclipped_left);
+    for (int16_t x = left; x < right; x += WALL_STRIP_WIDTH) {
+        uint8_t width = (uint8_t)((right - x) >= (int16_t)WALL_STRIP_WIDTH ? WALL_STRIP_WIDTH : (right - x));
         emit_chunk(texture_id, role, x, top, (uint16_t)(bot - top), depth, width, (uint16_t)(u_acc >> 8));
-        u_acc += u_step;
+        u_acc += u_step * width;
     }
 }
 
@@ -799,9 +893,7 @@ static void upload_scene(void) {
         if (i < cmd_count) {
             sprite_cmd_t *cmd = &cmds[i];
             uint16_t sprite = SPRITE_BASE + i;
-            ctrl_scb2[i] = (uint16_t)((cmd->x_shrink << 8) | cmd->y_shrink);
-            ctrl_scb3[i] = (uint16_t)((scb3_yfield_from_top(cmd->y) << 7) | (cmd->size_tiles & 0x3fu));
-            ctrl_scb4[i] = (uint16_t)(((uint16_t)(cmd->x & 0x01ff)) << 7);
+            uint8_t visible = 1;
             if (!shadow_valid[i] || shadow_card_id[i] != cmd->card_id) {
                 if (scb1_rewrites < MAX_SCB1_REWRITES) {
                     write_tilemap(sprite, cmd->card_id);
@@ -810,7 +902,18 @@ static void upload_scene(void) {
                     scb1_rewrites++;
                 } else {
                     scb1_deferred++;
+                    visible = 0;
+                    profile.degrade_flags |= NG_DEGRADE_PANIC_CHUNKS;
                 }
+            }
+            if (visible) {
+                ctrl_scb2[i] = (uint16_t)((cmd->x_shrink << 8) | cmd->y_shrink);
+                ctrl_scb3[i] = (uint16_t)((scb3_yfield_from_top(cmd->y) << 7) | (cmd->size_tiles & 0x3fu));
+                ctrl_scb4[i] = (uint16_t)(((uint16_t)(cmd->x & 0x01ff)) << 7);
+            } else {
+                ctrl_scb2[i] = 0;
+                ctrl_scb3[i] = 0;
+                ctrl_scb4[i] = 0;
             }
         } else {
             ctrl_scb2[i] = 0;
@@ -852,12 +955,8 @@ static void update_max_metrics(uint16_t scb_words, uint16_t fit_frames) {
     }
 }
 
-static void draw_overlay(void) {
+static void draw_overlay(uint16_t scb_words, uint16_t fit_frames) {
     char line[38];
-    uint16_t scb_words = profile.scb1_words + profile.scb_control_words;
-    uint16_t fit_frames = (uint16_t)((scb_words + VBLANK_PRACTICAL_WORDS - 1u) / VBLANK_PRACTICAL_WORDS);
-    if (fit_frames == 0) fit_frames = 1;
-    update_max_metrics(scb_words, fit_frames);
 
     put_overlay_line(1, "DOOM AES M2 E1M1 WALLS");
     snprintf(line, sizeof(line), "DEMO %-6s DPAD TAKES OVER", demo_label());
@@ -885,16 +984,29 @@ int main(void) {
     init_palettes();
     bios_lsp_1st();
     preload_wall_tilemaps();
+    ram_high_water_bytes = 0;
 
     for (;;) {
+        uint16_t scb_words;
+        uint16_t fit_frames;
         ng_wait_vblank();
         ng_profile_reset(&profile, frame_id++);
-        profile.ram_high_water_bytes = RAM_HWM_BYTES;
+        update_ram_high_water();
 
         update_controls();
+        update_ram_high_water();
         render_scene();
+        update_ram_high_water();
         upload_scene();
-        draw_overlay();
+        update_ram_high_water();
+        scb_words = profile.scb1_words + profile.scb_control_words;
+        fit_frames = (uint16_t)((scb_words + VBLANK_PRACTICAL_WORDS - 1u) / VBLANK_PRACTICAL_WORDS);
+        if (fit_frames == 0) fit_frames = 1;
+        update_max_metrics(scb_words, fit_frames);
+        if ((frame_id & OVERLAY_UPDATE_MASK) == 0) {
+            draw_overlay(scb_words, fit_frames);
+            update_ram_high_water();
+        }
         copy_profile_to_mirror();
     }
     return 0;

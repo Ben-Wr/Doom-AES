@@ -2,13 +2,13 @@
 
 ROOT := ../..
 GAMEROM := m2
-LONG_NAME := Doom AES M2 E1M1 Walls
 YEAR := 2026
 PUBLISHER := Doom AES
 
 WAD ?= $(ROOT)/iwads/DOOM1.WAD
 MAP ?= E1M1
-MAP_LOWER := e1m1
+MAP_LOWER := $(shell printf '%s' '$(MAP)' | tr '[:upper:]' '[:lower:]')
+LONG_NAME := Doom AES M2 $(MAP) Walls
 
 BUILDDIR := build
 GENERATED := $(BUILDDIR)/generated
@@ -42,7 +42,9 @@ ROMTOOL_CMD := PYTHONPATH=$(ROMTOOL_PYTHONPATH) $(HOST_PYTHON) $(ROMTOOL_REAL)
 GNGEO_DATA_ORIG := $(shell dirname "$$(which $(GNGEO))")/../share/ngdevkit-gngeo/gngeo_data.zip
 ASSET_TOOL := ../milestone0_sprite_path/tools/make_assets.py
 
-CFLAGS := -std=c99 -fomit-frame-pointer -O2 -g -I../common -I$(GENERATED)
+CFLAGS := -std=c99 -fomit-frame-pointer -O2 -g -I../common -I$(GENERATED) \
+	-DM2_MAP_HEADER=\"$(MAP_LOWER)_map_data.h\" \
+	-DM2_WALL_CARDS_HEADER=\"$(MAP_LOWER)_wall_cards.h\"
 LDFLAGS :=
 
 MAP_HEADER := $(GENERATED)/$(MAP_LOWER)_map_data.h
@@ -167,10 +169,14 @@ mame-bench: $(CART) $(MAME_HASH) $(BIOS)
 mame-capture: $(CART) $(MAME_HASH) $(BIOS)
 	rm -rf $(BUILDDIR)/snap
 	mkdir -p $(BUILDDIR)/snap
+	rm -f $(BUILDDIR)/m2_profile.tsv $(BUILDDIR)/m2_profile_errors.log
 	$(MAME) -cfg_directory $(BUILDDIR)/cfg -nvram_directory $(BUILDDIR)/nvram \
 		-snapshot_directory $(BUILDDIR)/snap -hashpath $(BUILDDIR) \
 		-rompath $(ROMDIR) neogeo $(GAMEROM) -skip_gameinfo -nothrottle \
 		-seconds_to_run 60 -autoboot_script tools/mame_capture.lua
+	test -f $(BUILDDIR)/m2_profile.tsv
+	test "$$(wc -l < $(BUILDDIR)/m2_profile.tsv)" -gt 1
+	test ! -s $(BUILDDIR)/m2_profile_errors.log
 
 clean:
 	rm -rf $(BUILDDIR)
