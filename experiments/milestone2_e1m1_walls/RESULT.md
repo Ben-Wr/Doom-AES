@@ -131,43 +131,48 @@ Observed hardened gate summary:
 
 ```text
 profile samples:       1080
-frame progressions:     108
+frame progressions:     114
 max sprites:             75
 max peak sprites/line:   75
 max SCB words:         1445
-max RAM high-water:    4808 bytes
+max RAM high-water:    4812 bytes
 degrade flags:       $0001 (merged wall buckets only)
 panic degrade:       absent
+max window slack:        15 px
 captures:                5
 ```
 
 This pass proves real E1M1 geometry traversal, real WAD-derived wall materials,
-runtime card selection, 16-tile SCB1 rewrite limiting, and conservative branch culling.
+runtime card selection, dynamic tile-height wall windows, transparent wall-card guard lines,
+16-tile SCB1 rewrite limiting, and conservative branch culling.
 It also proves the capture harness now rejects panic frames, stale profile
-fields, missing frame progression, missing captures, and budget overruns.
-It does **not** yet prove wall readability.
+fields, missing frame progression, missing captures, oversized wall-window slack, and budget
+overruns. Visuals are materially better than the prior garbled/blank state, but still a
+coarse wall-only fallback; authored material families, palette depth lighting, and gameplay
+sprites remain the next quality jump.
 
 ## Diagnosis (2026-06-04 analysis pass — see docs/14)
 
 The 512px→256px card change *reduced* the stripe corruption but did **not** fix it; it only
-halved the affected window region. The actual cause is still live:
+halved the affected window region. The actual cause is now fixed in this pass:
 
 ```text
-ROOT CAUSE A (corruption): main.c sets size_tiles = CARD_TILE_COUNT (a fixed 256px window)
-  for every wall and varies only y_shrink. When the shrunk graphics are shorter than the
-  256px window (all far/steep walls), the hardware fills the leftover window with the
-  last-line-repeat smear (Sprite_shrinking.md), and texture_card() emits no transparent
-  guard line -> the green/white vertical garbage. FIX: dynamic window (ceil(h/16), as M1
-  already does) + transparent guard line on every card. Not a cosmetic LOD issue.
+ROOT CAUSE A (corruption): fixed. M2 now uses dynamic tile-height wall windows
+  (ceil(h/16)), bakes a transparent guard line into every real texture card, and the
+  MAME gate mirrors max_window_slack (15 px in the passing run). The wall path uses
+  tile-quantized full-window height for M2 because per-chunk Y-shrink fine tuning measured
+  too expensive on the 68k hot path; future fine tuning should be a lookup table.
 
 ROOT CAUSE B (chunky look): 16px sprite columns cap horizontal resolution at ~20 (40 at
   8px) vs Doom's 320. Fundamental; stylize it, do not optimize it.
 
 MISDIAGNOSIS (fps): walls were cut 92->55->40 to pass the 6fps floor, but this run shows
   max sprites 75/96 and max SCB 1445/1664 -- neither limit was hit. The real per-frame cost
-  is CPU (full BSP walk + per-seg/per-chunk divides), which the gate does not measure, and
-  bucket_occluded() is a dead stub. FIX: cut CPU (occlusion, precomputed visibility,
-  reciprocal tables); restore the wall budget; add a CPU + recognizability (SSIM) gate.
+  is CPU (full BSP walk + per-seg/per-chunk divides), which the gate does not measure.
+  A runtime bucket_occluded() implementation was tried and rejected because it dropped frame
+  progressions to 94-97 while reducing no hard-budget metric. FIX: cut CPU offline
+  (precomputed visibility, reciprocal/projection tables), then add a CPU + recognizability
+  (SSIM) gate.
 ```
 
 floor/ceiling fill is also still a placeholder backdrop (the timer-IRQ two-band split and
@@ -176,5 +181,5 @@ palette depth-lighting are not yet wired). Next pass should target the above in 
 MAME bench:
 
 ```text
-Average speed: 491.19% (latest full host-test MAME gate)
+Average speed: 887.22% (latest full host-test MAME gate)
 ```

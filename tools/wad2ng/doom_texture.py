@@ -18,6 +18,7 @@ WALL_CARD_WIDTH = 16
 WALL_SLICE_WIDTH = 16
 WALL_CARD_SAMPLE_WIDTH = 16
 WALL_OPAQUE_FILL_INDEX = 9
+WALL_DETAIL_BLEND = 0.25
 WALL_CARD_TILES = WALL_CARD_HEIGHT // 16
 WALL_CARD_BYTES_4BPP = WALL_CARD_WIDTH * WALL_CARD_HEIGHT // 2
 
@@ -241,10 +242,12 @@ def texture_card(texture_image: Image.Image, palette: list[tuple[int, int, int]]
     sample_rgb = sample.convert("RGB")
     detail_rgb = sample_rgb.resize((WALL_CARD_WIDTH, WALL_CARD_HEIGHT), resample=resampling)
     band_rgb = sample_rgb.resize((1, sample.height), resample=resampling).resize((WALL_CARD_WIDTH, WALL_CARD_HEIGHT), resample=resampling)
-    rgb = Image.blend(band_rgb, detail_rgb, 0.55)
+    rgb = Image.blend(band_rgb, detail_rgb, WALL_DETAIL_BLEND)
     out = rgb.quantize(palette=palette_image(palette), dither=dither_none)
     out = out.point([WALL_OPAQUE_FILL_INDEX if index == 0 else index for index in range(256)])
     out.putpalette(palette_bytes(palette))
+    for x in range(WALL_CARD_WIDTH):
+        out.putpixel((x, WALL_CARD_HEIGHT - 1), 0)
     return out
 
 

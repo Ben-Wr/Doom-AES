@@ -116,6 +116,7 @@ static uint8_t scb1_rewrites;
 static uint8_t scb1_deferred;
 static uint8_t max_scb1_rewrites;
 static uint8_t max_scb1_deferred;
+static uint16_t max_window_slack;
 static uint8_t role_counts[3];
 static uint8_t max_roles[3];
 static uint8_t max_peak;
@@ -169,15 +170,33 @@ static int16_t clamp_i16(int16_t value, int16_t lo, int16_t hi) {
     return value;
 }
 
-static uint8_t y_shrink_for_height(uint16_t height) {
-    if (height > CARD_SOURCE_HEIGHT_PX) {
+static uint8_t y_shrink_for_source_height(uint16_t height, uint16_t source_height) {
+    if (height > source_height) {
         guard_asserted = 1;
         return 0xff;
     }
     if (height <= 1) {
         return 0;
     }
-    return (uint8_t)(((uint32_t)(height - 1u) * 255u) / (CARD_SOURCE_HEIGHT_PX - 1u));
+    if (source_height <= 1u) {
+        return 0xff;
+    }
+    return (uint8_t)(((uint32_t)(height - 1u) * 255u) / (source_height - 1u));
+}
+
+static uint8_t y_shrink_for_height(uint16_t height) {
+    return y_shrink_for_source_height(height, CARD_SOURCE_HEIGHT_PX);
+}
+
+static uint8_t size_tiles_for_height(uint16_t height) {
+    uint8_t tiles = (uint8_t)((height + 15u) / 16u);
+    if (tiles == 0) {
+        tiles = 1;
+    }
+    if (tiles > CARD_TILE_COUNT) {
+        tiles = CARD_TILE_COUNT;
+    }
+    return tiles;
 }
 
 static uint16_t scb3_yfield_from_top(int16_t top) {
@@ -199,6 +218,7 @@ static void copy_profile_to_mirror(void) {
     dst[9] = profile.palette_words;
     dst[10] = profile.ram_high_water_bytes;
     dst[11] = profile.degrade_flags;
+    dst[12] = max_window_slack;
 }
 
 static uint32_t current_stack_pointer(void) {
@@ -463,7 +483,16 @@ static void reset_occlusion(void) {
 
 static uint8_t bucket_for_x(int16_t x) {
     int16_t clamped = clamp_i16(x, 0, SCREEN_W - 1);
-    uint8_t bucket = (uint8_t)(clamped / bucket_size);
+    uint8_t bucket;
+    if (bucket_size == 16u) {
+        bucket = (uint8_t)(clamped >> 4);
+    } else if (bucket_size == 32u) {
+        bucket = (uint8_t)(clamped >> 5);
+    } else if (bucket_size == 64u) {
+        bucket = (uint8_t)(clamped >> 6);
+    } else {
+        bucket = (uint8_t)(clamped / bucket_size);
+    }
     if (bucket >= OCC_BUCKETS) {
         bucket = OCC_BUCKETS - 1;
     }
@@ -629,8 +658,15 @@ static void emit_chunk(uint16_t texture_id, wall_role_t role, int16_t x, int16_t
     cmd.depth = depth;
     cmd.width = width;
     cmd.x_shrink = (uint8_t)(width >= 16 ? 0x0f : (width - 1u));
-    cmd.y_shrink = y_shrink_for_height(height);
-    cmd.size_tiles = CARD_TILE_COUNT;
+    cmd.size_tiles = size_tiles_for_height(height);
+    cmd.y_shrink = 0xffu;
+    {
+        uint16_t window_height = (uint16_t)cmd.size_tiles * 16u;
+        uint16_t slack = window_height > height ? (uint16_t)(window_height - height) : 0u;
+        if (slack > max_window_slack) {
+            max_window_slack = slack;
+        }
+    }
     cmd.role = (uint8_t)role;
     add_cmd(cmd);
 }
@@ -884,6 +920,7 @@ static uint8_t compute_peak_scanline(void) {
 
 static void render_pass(void) {
     cmd_count = 0;
+    max_window_slack = 0;
     guard_asserted = 0;
     pass_overflow = 0;
     pass_budget_dropped = 0;

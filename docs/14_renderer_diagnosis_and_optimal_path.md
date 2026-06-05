@@ -121,14 +121,16 @@ bottleneck, guided by a gate that can't see the real one.
 
 | Lever | Effect | Effort |
 |---|---|---|
-| Implement `bucket_occluded()` (it's a stub returning 0) | far walls behind near walls stop being projected/emitted — fewer divides *and* fewer sprites in dense sightlines | low |
+| Keep runtime `bucket_occluded()` out of the hot path | It was measured after this diagnosis and made M2 slower while reducing no hard-budget metric. Do occlusion offline instead. | low |
 | Precompute per-node visible-seg lists / use the REJECT lump in `wad2ng` | kill the full O(all-nodes) walk + per-seg math every frame | high |
 | Reciprocal + projection lookup tables (precompute 1/depth) | replace per-chunk 68k division with a table read | high |
 | Replace the 40-rewrite **count** cap with a **word** cap on SCB1 | spread upload honestly instead of silently blanking strips | medium |
 | Measure CPU per phase (BSP / project / interpolate / upload) | aim every future optimization at the proven bottleneck | high |
 
-Once CPU is cut, the wall budget can go **back up** toward the documented ~40-48 chunk target
-instead of the panic-driven 40.
+Post-implementation note: a naïve runtime bucket check was tried and rejected. The passing
+M2 fix restores the 55-wall target and leaves `bucket_occluded()` as a no-op; the next real
+CPU win must come from compiler-side visibility/PVS or lookup tables, not a per-chunk 68k
+test.
 
 ---
 
@@ -162,6 +164,8 @@ floor/ceiling            0    backdrop color / timer-IRQ split, NOT sprites
   intentional. Real Doom texture identity (STARTAN brown, tech panels, BROWN) survives at the
   *palette + silhouette* level, not the pixel level.
 - **Window = projected height** (root cause A fix) + transparent guard line. Non-negotiable.
+  M2 currently rounds height up to whole 16px tiles and uses `$FF` Y-shrink to avoid a
+  per-chunk divide; later fine-tuning must use a lookup table, not runtime division.
 - **Free light diminishing:** split the 256 palettes into depth/sector-light bands and select
   the palette per sprite by `(base_palette + depth_band)`. This is Doom's signature falloff
   for ~2 instructions per chunk, and the sector-light values are *already compiled and
@@ -220,9 +224,9 @@ which is exactly the current state.
 
 1. **Fix the window bug, not the symptoms.** Dynamic `size_tiles` + transparent guard line on
    all cards. This kills the green/white garbage at the source. (Root cause A.)
-2. **Stop deleting walls to pass fps.** Restore the wall budget toward 40-48 and instead cut
-   **CPU**: implement the `bucket_occluded` stub, then precompute visibility/reciprocals in
-   `wad2ng`. (Root cause / §4.)
+2. **Stop deleting walls to pass fps.** Restore the wall budget and cut **CPU** offline:
+   precompute visibility/reciprocals in `wad2ng`. Do not resurrect the measured-bad runtime
+   bucket check as the main fix. (Root cause / §4.)
 3. **Make the harness see the real bottleneck.** Add a CPU-cycle (or scanline-time) measure
    to the profile overlay and gate, and add a **visual recognizability gate** (e.g. SSIM of
    MAME capture vs host reference ≥ threshold) using the existing `visual_compare.py`. A green

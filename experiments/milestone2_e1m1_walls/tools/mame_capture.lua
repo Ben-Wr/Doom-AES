@@ -16,6 +16,7 @@ local MAX_CMDS = 96
 local MAX_SCANLINE = 96
 local MAX_SCB_WORDS = 1664
 local MAX_RAM_BYTES = 56 * 1024
+local MAX_WINDOW_SLACK = 15
 local DEGRADE_PANIC_CHUNKS = 0x0010
 local log = io.open("build/m2_profile.tsv", "w")
 local error_log = io.open("build/m2_profile_errors.log", "w")
@@ -36,6 +37,7 @@ local max_scanline = 0
 local max_scb_words = 0
 local max_ram_bytes = 0
 local max_degrade_flags = 0
+local max_window_slack = 0
 local error_seen = {}
 local errors = 0
 
@@ -124,6 +126,7 @@ local function read_profile()
         palette_words = read_u16(PROFILE_ADDR + 18),
         ram_high_water_bytes = read_u16(PROFILE_ADDR + 20),
         degrade_flags = read_u16(PROFILE_ADDR + 22),
+        wall_window_slack = read_u16(PROFILE_ADDR + 24),
     }
 end
 
@@ -132,7 +135,7 @@ local function write_profile_row(p)
         return
     end
     log:write(string.format(
-        "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+        "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
         frame,
         p.frame_id,
         p.game_ticks,
@@ -145,7 +148,8 @@ local function write_profile_row(p)
         p.fix_words,
         p.palette_words,
         p.ram_high_water_bytes,
-        p.degrade_flags))
+        p.degrade_flags,
+        p.wall_window_slack))
 end
 
 local function assert_profile(p)
@@ -155,6 +159,7 @@ local function assert_profile(p)
     if scb_words > max_scb_words then max_scb_words = scb_words end
     if p.ram_high_water_bytes > max_ram_bytes then max_ram_bytes = p.ram_high_water_bytes end
     max_degrade_flags = max_degrade_flags | p.degrade_flags
+    if p.wall_window_slack > max_window_slack then max_window_slack = p.wall_window_slack end
 
     if p.sprites_emitted > MAX_SPRITES then
         record_error(string.format("sprites_emitted %d > budget %d", p.sprites_emitted, MAX_SPRITES))
@@ -176,6 +181,9 @@ local function assert_profile(p)
     end
     if (p.degrade_flags & DEGRADE_PANIC_CHUNKS) ~= 0 then
         record_error(string.format("panic degrade flag set: 0x%04X", p.degrade_flags))
+    end
+    if p.wall_window_slack > MAX_WINDOW_SLACK then
+        record_error(string.format("wall window slack %d > %d; sprite window is taller than projected wall", p.wall_window_slack, MAX_WINDOW_SLACK))
     end
 end
 
@@ -214,8 +222,8 @@ local function write_summary()
         end
     end
     if summary_log then
-        summary_log:write("profile_samples\tframe_progressions\tmax_sprites\tmax_scanline\tmax_scb_words\tmax_ram_bytes\tmax_degrade_flags\tcaptures\n")
-        summary_log:write(string.format("%d\t%d\t%d\t%d\t%d\t%d\t0x%04X\t%d\n",
+        summary_log:write("profile_samples\tframe_progressions\tmax_sprites\tmax_scanline\tmax_scb_words\tmax_ram_bytes\tmax_degrade_flags\tmax_window_slack\tcaptures\n")
+        summary_log:write(string.format("%d\t%d\t%d\t%d\t%d\t%d\t0x%04X\t%d\t%d\n",
             profile_samples,
             frame_progressions,
             max_sprites,
@@ -223,11 +231,12 @@ local function write_summary()
             max_scb_words,
             max_ram_bytes,
             max_degrade_flags,
+            max_window_slack,
             captured))
         summary_log:flush()
     end
     print(string.format(
-        "M2_PROFILE_SUMMARY\tsamples=%d\tframe_progressions=%d\tmax_sprites=%d\tmax_scanline=%d\tmax_scb_words=%d\tmax_ram=%d\tdegrade=0x%04X\tcaptures=%d",
+        "M2_PROFILE_SUMMARY\tsamples=%d\tframe_progressions=%d\tmax_sprites=%d\tmax_scanline=%d\tmax_scb_words=%d\tmax_ram=%d\tdegrade=0x%04X\tmax_window_slack=%d\tcaptures=%d",
         profile_samples,
         frame_progressions,
         max_sprites,
@@ -235,6 +244,7 @@ local function write_summary()
         max_scb_words,
         max_ram_bytes,
         max_degrade_flags,
+        max_window_slack,
         captured))
 end
 
@@ -265,7 +275,7 @@ local function assert_contract()
 end
 
 if log then
-    log:write("mame_frame\tframe_id\tgame_ticks\trender_ticks\tupload_ticks\tsprites_emitted\tmax_sprites_scanline\tscb1_words\tscb_control_words\tfix_words\tpalette_words\tram_high_water_bytes\tdegrade_flags\n")
+    log:write("mame_frame\tframe_id\tgame_ticks\trender_ticks\tupload_ticks\tsprites_emitted\tmax_sprites_scanline\tscb1_words\tscb_control_words\tfix_words\tpalette_words\tram_high_water_bytes\tdegrade_flags\twall_window_slack\n")
 end
 
 frame_subscription = emu.add_machine_frame_notifier(function()
