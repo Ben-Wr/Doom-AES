@@ -23,13 +23,14 @@ from tools.wad2ng.wad import Wad
 SCREEN_W = 320
 SCREEN_H = 224
 VIEW_TOP = 16
-HORIZON_Y = 112
+VIEW_BOTTOM = 176
+HORIZON_Y = 96
 FOCAL = 184
 PROJ_SCALE = 220
 NEAR_Z = 28
 PLAYER_EYE = 41
 STRIP_W = 16
-TARGET_WALLS = 55
+TARGET_WALLS = 53
 
 SIN_Q8 = [
     0,
@@ -199,7 +200,7 @@ class HostRenderer:
         self.map = read_map(wad, map_name)
         self.textures = texture_table(self.map)
         self.texture_ids = {name: index for index, name in enumerate(self.textures)}
-        self.atlas = Image.open(atlas_path).convert("RGB")
+        self.atlas = Image.open(atlas_path).convert("P")
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.card_height = report.get("card_height", 256)
         self.card_base = [record["base_card"] for record in report["textures"]]
@@ -263,15 +264,17 @@ class HostRenderer:
                 bucket_filled[bucket] = True
                 bucket_depth[bucket] = depth
 
-        def add(command: tuple[int, int, int, int, int, int]) -> None:
+        def add(command: tuple[int, int, int, int, int, int]) -> bool:
             if len(commands) < target:
                 commands.append(command)
                 mark(command[1], command[0])
-                return
+                return True
             farthest = max(range(len(commands)), key=lambda index: commands[index][0])
             if command[0] < commands[farthest][0]:
                 commands[farthest] = command
                 mark(command[1], command[0])
+                return True
+            return False
 
         for seg, texture, xoff, seg_offset, length, floor, ceil in self.wall_roles():
             v0 = self.map.vertices[seg.v1]
@@ -316,21 +319,28 @@ class HostRenderer:
                 top = HORIZON_Y - (((ceil - PLAYER_EYE) * PROJ_SCALE) // depth)
                 bottom = HORIZON_Y - (((floor - PLAYER_EYE) * PROJ_SCALE) // depth)
                 top = max(VIEW_TOP, top)
-                bottom = min(SCREEN_H, bottom)
+                bottom = min(VIEW_BOTTOM, bottom)
                 if bottom > top + 1 and not is_occluded(x, depth):
-                    add((depth, x, top, width, bottom, self.card_for(texture, u_acc >> 8)))
+                    accepted = add((depth, x, top, width, bottom, self.card_for(texture, u_acc >> 8)))
+                else:
+                    accepted = True
                 if len(commands) >= target:
                     break
                 u_acc += u_step * width
 
         image = Image.new("RGB", (SCREEN_W, SCREEN_H), (67, 113, 140))
+        bg = self.atlas.crop((0, 0, STRIP_W, self.card_height)).resize((STRIP_W, SCREEN_H), resample_nearest())
+        bg_mask = bg.point(lambda value: 0 if value == 0 else 255, "L")
+        for x in range(0, SCREEN_W, STRIP_W):
+            image.paste(bg.convert("RGB"), (x, 0), bg_mask)
         draw = ImageDraw.Draw(image)
-        draw.rectangle((0, HORIZON_Y, SCREEN_W, SCREEN_H), fill=(75, 110, 82))
         for depth, x, top, width, bottom, card in sorted(commands, reverse=True):
             if width <= 0 or bottom <= top:
                 continue
             crop = self.atlas.crop((card * STRIP_W, 0, card * STRIP_W + STRIP_W, self.card_height))
-            image.paste(crop.resize((width, bottom - top), resample_nearest()), (x, top))
+            resized = crop.resize((width, bottom - top), resample_nearest())
+            mask = resized.point(lambda value: 0 if value == 0 else 255, "L")
+            image.paste(resized.convert("RGB"), (x, top), mask)
         text(draw, (4, 4), f"ang {angle:02d} target {target:02d} occ {int(occlusion)} cmds {len(commands):02d}")
         return image
 

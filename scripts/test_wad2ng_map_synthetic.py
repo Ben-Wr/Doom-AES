@@ -93,6 +93,15 @@ def make_wad(
         ("P_START", b""),
         ("PATCHA", patch_lump()),
         ("P_END", b""),
+        ("S_START", b""),
+        ("SHTGA0", patch_lump()),
+        ("SHTGB0", patch_lump()),
+        ("POSSA1", patch_lump()),
+        ("TROOA1", patch_lump()),
+        ("BAR1A0", patch_lump()),
+        ("CLIPA0", patch_lump()),
+        ("BAL1A0", patch_lump()),
+        ("S_END", b""),
         ("E1M1", b""),
         ("THINGS", things),
         ("LINEDEFS", linedefs),
@@ -166,13 +175,23 @@ def main() -> int:
     assert (out / "e1m1_map_preview.svg").exists()
     atlas_report = json.loads((out / "e1m1_wall_atlas_report.json").read_text())
     assert atlas_report["texture_count"] == 1
-    assert atlas_report["cards"] == 5
+    assert {group["symbol"] for group in atlas_report["m3_sprite_groups"]} == {
+        "WEAPON",
+        "MUZZLE",
+        "ZOMBIEMAN",
+        "IMP",
+        "BARREL",
+        "PICKUP",
+        "PROJECTILE",
+    }
+    assert atlas_report["cards"] == 5 + sum(group["card_count"] for group in atlas_report["m3_sprite_groups"])
     assert atlas_report["background_card"] == 0
     assert atlas_report["textures"][0]["card_count"] == 4
     assert atlas_report["missing_textures"] == []
     assert (out / "e1m1_wall_cards.gif").exists()
     wall_header_text = (out / "e1m1_wall_cards.h").read_text()
-    assert "#define M2_WALL_CARD_COUNT 5u" in wall_header_text
+    assert f"#define M2_WALL_CARD_COUNT {atlas_report['cards']}u" in wall_header_text
+    assert "#define M3_CARD_WEAPON_BASE" in wall_header_text
 
     bad_wad_path = root / "BAD_PATCH.WAD"
     bad_out = root / "bad_out"

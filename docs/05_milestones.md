@@ -175,6 +175,13 @@ indicates a CPU-architecture problem to fix, not a content cut to accept).
 
 Goal: make it Doom combat.
 
+Current proof slice (2026-06-04): `experiments/milestone2_e1m1_walls/` now assembles
+M3 sprite cards directly from the user-provided WAD (`SHTGA0`, `SHTGB0`, `POSSA1`,
+`TROOA1`, `BAR1A0`, `CLIPA0`, `BAL1A0`) and proves foreground weapon replacement,
+world-space projectile projection, simple WAD THING billboards, active strip caps, and
+fix-layer HUD text inside the M2 E1M1 ROM. This is not full M3 combat yet: hitscan,
+damage, barrel chains, enemy behavior, and playable clear-state remain open.
+
 Deliverables:
 
 ```text
@@ -189,6 +196,10 @@ Gate (all required):
 
 ```text
 [ ] Weapon sprites never push peak sprites/line over budget (weapon has its own reserve).
+[ ] User-provided WAD is the source for thing/weapon/projectile images; no checked-in
+    copyrighted sprite/weapon graphics and no procedural stand-ins for Doom actors.
+[ ] Projectile/thing sprites are world-space billboards: turning the camera must not pin
+    projectiles to the screen center.
 [ ] Per-strip occlusion is correct enough to fight around pillars (16px popping OK).
 [ ] Thing LOD: near = full strips, far = 1-2 strips, with no shrink-only violation.
 [ ] Active-object cap enforced; spawning past it is handled deterministically.

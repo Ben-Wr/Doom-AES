@@ -23,13 +23,17 @@
 #define BG_SPRITE_COUNT 20u
 #define SPRITE_BASE 32u
 #define MAX_CMDS 96u
+#define THING_SPRITE_BASE (SPRITE_BASE + MAX_CMDS)
+#define THING_SPRITE_COUNT 6u
+#define WEAPON_SPRITE_BASE (THING_SPRITE_BASE + THING_SPRITE_COUNT)
+#define MUZZLE_SPRITE_BASE (WEAPON_SPRITE_BASE + M3_CARD_WEAPON_COUNT)
 #define PROFILE_MIRROR_ADDR 0x10e080u
 
 #define SCREEN_W 320
 #define SCREEN_H 224
 #define VIEW_TOP 16
-#define VIEW_BOTTOM 224
-#define HORIZON_Y 112
+#define VIEW_BOTTOM 176
+#define HORIZON_Y 96
 #define FOCAL 184
 #define PROJ_SCALE 220
 #define NEAR_Z 28
@@ -47,16 +51,22 @@
 #define OCC_BUCKETS 32u
 #define DEMO_CYCLE_FRAMES 960u
 #define RENDER_PASS_COUNT 6u
-#define TARGET_SPRITES 55u
-#define TARGET_TOTAL_SPRITES (TARGET_SPRITES + BG_SPRITE_COUNT)
-#define TARGET_PEAK 94u
+#define TARGET_SPRITES 53u
+#define TARGET_TOTAL_SPRITES 92u
+#define TARGET_PEAK 92u
 #define MAX_SCB1_REWRITES 40u
 #define TEXTURE_COARSE_Z 520u
 #define FAMILY_TEXTURE_LOD 5u
 #define FAMILY_TEXTURE_Z 760u
 #define FRUSTUM_MARGIN_PX 16
 #define WALL_STRIP_WIDTH 16u
+#define WALL_CONTACT_PIXELS 3
 #define OVERLAY_UPDATE_MASK 3u
+#define M3_THING_SCAN_LIMIT 36u
+#define M3_PROJECTILE_START_DIST 96
+#define M3_PROJECTILE_SPEED 14
+#define M3_PROJECTILE_LIFETIME 72u
+#define M3_FIRE_FRAME_COUNT 14u
 
 typedef enum wall_role_t {
     ROLE_MIDDLE = 0,
@@ -91,8 +101,13 @@ static const int16_t sin_q8_table[64] = {
 };
 
 static sprite_cmd_t cmds[MAX_CMDS];
+static sprite_cmd_t thing_cmds[THING_SPRITE_COUNT];
+static sprite_cmd_t weapon_cmds[M3_CARD_WEAPON_COUNT];
+static sprite_cmd_t muzzle_cmds[M3_CARD_MUZZLE_COUNT];
 static uint16_t shadow_card_id[MAX_CMDS];
+static uint16_t thing_shadow_card_id[THING_SPRITE_COUNT];
 static uint8_t shadow_valid[MAX_CMDS];
+static uint8_t thing_shadow_valid[THING_SPRITE_COUNT];
 static uint16_t ctrl_scb2[MAX_CMDS];
 static uint16_t ctrl_scb3[MAX_CMDS];
 static uint16_t ctrl_scb4[MAX_CMDS];
@@ -104,6 +119,9 @@ static player_t player;
 static ng_profile_frame_t profile;
 static uint16_t frame_id;
 static uint8_t cmd_count;
+static uint8_t thing_cmd_count;
+static uint8_t weapon_cmd_count;
+static uint8_t muzzle_cmd_count;
 static uint8_t last_cmd_count;
 static uint8_t global_lod;
 static uint8_t bucket_size;
@@ -117,6 +135,8 @@ static uint8_t scb1_deferred;
 static uint8_t max_scb1_rewrites;
 static uint8_t max_scb1_deferred;
 static uint16_t max_window_slack;
+static uint8_t max_thing_sprites;
+static uint8_t max_weapon_sprites;
 static uint8_t role_counts[3];
 static uint8_t max_roles[3];
 static uint8_t max_peak;
@@ -133,6 +153,12 @@ static int16_t view_cos_q8;
 static int16_t view_sin_q8;
 static int16_t view_right_x_q8;
 static int16_t view_right_y_q8;
+static int16_t projectile_x;
+static int16_t projectile_y;
+static int16_t projectile_vx;
+static int16_t projectile_vy;
+static uint8_t projectile_active;
+static uint8_t projectile_age;
 static uint8_t guard_asserted;
 
 extern uint8_t _end;
@@ -219,6 +245,8 @@ static void copy_profile_to_mirror(void) {
     dst[10] = profile.ram_high_water_bytes;
     dst[11] = profile.degrade_flags;
     dst[12] = max_window_slack;
+    dst[13] = thing_cmd_count;
+    dst[14] = (uint16_t)(weapon_cmd_count + muzzle_cmd_count);
 }
 
 static uint32_t current_stack_pointer(void) {
@@ -311,11 +339,19 @@ static void reset_state(void) {
     bucket_size = 16;
     auto_demo = 1;
     demo_frame = 0;
+    projectile_x = 0;
+    projectile_y = 0;
+    projectile_vx = 0;
+    projectile_vy = 0;
+    projectile_active = 0;
+    projectile_age = 0;
     max_peak = 0;
     max_sprites = 0;
     max_scb_words = 0;
     max_scb1_rewrites = 0;
     max_scb1_deferred = 0;
+    max_thing_sprites = 0;
+    max_weapon_sprites = 0;
     min_fps = 60;
     last_cmd_count = MAX_CMDS;
     for (uint8_t i = 0; i < 3; i++) {
@@ -325,6 +361,10 @@ static void reset_state(void) {
     for (uint8_t i = 0; i < MAX_CMDS; i++) {
         shadow_card_id[i] = 0;
         shadow_valid[i] = 0;
+    }
+    for (uint8_t i = 0; i < THING_SPRITE_COUNT; i++) {
+        thing_shadow_card_id[i] = 0;
+        thing_shadow_valid[i] = 0;
     }
 }
 
@@ -388,21 +428,36 @@ static void try_move(int16_t dx, int16_t dy) {
 }
 
 static void try_move_demo(int16_t dx, int16_t dy) {
-    int16_t nx = player.x + dx;
-    int16_t ny = player.y + dy;
-
-    if (nx >= M2_BOUNDS_MIN_X - 64 && nx <= M2_BOUNDS_MAX_X + 64) {
-        player.x = nx;
-    }
-    if (ny >= M2_BOUNDS_MIN_Y - 64 && ny <= M2_BOUNDS_MAX_Y + 64) {
-        player.y = ny;
-    }
+    try_move(dx, dy);
 }
 
 static uint8_t manual_input_active(void) {
-    uint16_t held = bios_p1current & (CNT_UP | CNT_DOWN | CNT_LEFT | CNT_RIGHT | CNT_A | CNT_B);
-    uint16_t changed = bios_p1change & CNT_D;
+    uint16_t held = bios_p1current & (CNT_UP | CNT_DOWN | CNT_LEFT | CNT_RIGHT | CNT_A | CNT_B | CNT_C);
+    uint16_t changed = bios_p1change & (CNT_C | CNT_D);
     return (uint8_t)(held || changed || (bios_statchange & CNT_START1));
+}
+
+static void spawn_projectile(int16_t fx_q8, int16_t fy_q8) {
+    projectile_x = (int16_t)(player.x + ((fx_q8 * M3_PROJECTILE_START_DIST) >> 8));
+    projectile_y = (int16_t)(player.y + ((fy_q8 * M3_PROJECTILE_START_DIST) >> 8));
+    projectile_vx = (int16_t)((fx_q8 * M3_PROJECTILE_SPEED) >> 8);
+    projectile_vy = (int16_t)((fy_q8 * M3_PROJECTILE_SPEED) >> 8);
+    projectile_active = 1;
+    projectile_age = 0;
+}
+
+static void advance_projectile(void) {
+    if (!projectile_active) {
+        return;
+    }
+    projectile_x = (int16_t)(projectile_x + projectile_vx);
+    projectile_y = (int16_t)(projectile_y + projectile_vy);
+    projectile_age++;
+    if (projectile_age >= M3_PROJECTILE_LIFETIME ||
+        projectile_x < M2_BOUNDS_MIN_X - 128 || projectile_x > M2_BOUNDS_MAX_X + 128 ||
+        projectile_y < M2_BOUNDS_MIN_Y - 128 || projectile_y > M2_BOUNDS_MAX_Y + 128) {
+        projectile_active = 0;
+    }
 }
 
 static void update_auto_demo(void) {
@@ -421,19 +476,27 @@ static void update_auto_demo(void) {
             player.angle = (uint8_t)((player.angle + 1u) & 63u);
         }
     } else if (phase < 360) {
-        try_move_demo((int16_t)((fx * MOVE_STEP) >> 8), (int16_t)((fy * MOVE_STEP) >> 8));
+        if ((phase & 7u) == 0) {
+            try_move_demo((int16_t)((fx * MOVE_STEP) >> 8), (int16_t)((fy * MOVE_STEP) >> 8));
+        }
     } else if (phase < 560) {
         if ((phase & 7u) == 0) {
             player.angle = (uint8_t)((player.angle - 1u) & 63u);
+            try_move_demo((int16_t)((rx * STRAFE_STEP) >> 8), (int16_t)((ry * STRAFE_STEP) >> 8));
         }
-        try_move_demo((int16_t)((rx * STRAFE_STEP) >> 8), (int16_t)((ry * STRAFE_STEP) >> 8));
     } else if (phase < 760) {
-        try_move_demo((int16_t)(-((fx * MOVE_STEP) >> 8)), (int16_t)(-((fy * MOVE_STEP) >> 8)));
+        if ((phase & 7u) == 0) {
+            try_move_demo((int16_t)(-((fx * MOVE_STEP) >> 8)), (int16_t)(-((fy * MOVE_STEP) >> 8)));
+        }
     } else {
         if ((phase & 3u) == 0) {
             player.angle = (uint8_t)((player.angle + 1u) & 63u);
         }
     }
+    if ((demo_frame % 96u) == 0u) {
+        spawn_projectile(cos_q8(player.angle), sin_q8(player.angle));
+    }
+    advance_projectile();
     demo_frame++;
 }
 
@@ -469,9 +532,14 @@ static void update_controls(void) {
     if (bios_p1current & CNT_B) {
         try_move((int16_t)((rx * STRAFE_STEP) >> 8), (int16_t)((ry * STRAFE_STEP) >> 8));
     }
+    if (bios_p1change & CNT_C) {
+        spawn_projectile(cos_q8(player.angle), sin_q8(player.angle));
+    }
     if (bios_p1change & CNT_D || bios_statchange & CNT_START1) {
         reset_state();
+        return;
     }
+    advance_projectile();
 }
 
 static void reset_occlusion(void) {
@@ -503,6 +571,173 @@ static uint8_t bucket_occluded(int16_t x, uint16_t depth) {
     (void)x;
     (void)depth;
     return 0;
+}
+
+static uint8_t strip_occluded(int16_t x, uint16_t depth) {
+    uint8_t bucket = bucket_for_x(x);
+    return (uint8_t)(bucket_filled[bucket] && depth > bucket_depth[bucket] + 16u);
+}
+
+static uint8_t card_count_clamped(uint8_t count, uint8_t max_count) {
+    if (count == 0) {
+        return 1;
+    }
+    return count > max_count ? max_count : count;
+}
+
+static uint8_t add_thing_strip(uint16_t card_id, int16_t x, int16_t y, uint16_t height, uint16_t depth, uint16_t source_height) {
+    sprite_cmd_t *cmd;
+    if (thing_cmd_count >= THING_SPRITE_COUNT || height < 2u || source_height == 0u) {
+        return 0;
+    }
+    if (strip_occluded(x, depth)) {
+        return 0;
+    }
+    cmd = &thing_cmds[thing_cmd_count++];
+    cmd->card_id = card_id;
+    cmd->x = x;
+    cmd->y = y;
+    cmd->height = height;
+    cmd->depth = depth;
+    cmd->width = WALL_STRIP_WIDTH;
+    cmd->x_shrink = 0x0fu;
+    cmd->size_tiles = size_tiles_for_height(height);
+    if (cmd->size_tiles > (uint8_t)((source_height + 15u) / 16u)) {
+        cmd->size_tiles = (uint8_t)((source_height + 15u) / 16u);
+    }
+    if (cmd->size_tiles == 0) {
+        cmd->size_tiles = 1;
+    }
+    cmd->y_shrink = 0xffu;
+    cmd->role = ROLE_MIDDLE;
+    return 1;
+}
+
+static uint8_t emit_billboard(uint16_t base_card, uint8_t card_count, uint16_t source_height, int16_t map_x, int16_t map_y, uint8_t max_strips) {
+    int32_t dx = map_x - player.x;
+    int32_t dy = map_y - player.y;
+    int32_t z = (dx * view_cos_q8 + dy * view_sin_q8) >> 8;
+    int32_t side;
+    int16_t center_x;
+    uint16_t depth;
+    uint16_t height;
+    uint16_t bottom;
+    int16_t top;
+    uint8_t use_strips;
+    uint8_t first_card;
+    uint8_t emitted = 0;
+
+    if (z <= NEAR_Z || z > 1400) {
+        return 0;
+    }
+    side = (dx * view_right_x_q8 + dy * view_right_y_q8) >> 8;
+    center_x = (int16_t)(SCREEN_W / 2 + (side * FOCAL) / z);
+    if (center_x < -48 || center_x >= SCREEN_W + 48) {
+        return 0;
+    }
+    depth = (uint16_t)z;
+    height = (uint16_t)(((uint32_t)source_height * PROJ_SCALE) / depth);
+    if (height < 10u) {
+        height = 10u;
+    }
+    if (height > source_height) {
+        height = source_height;
+    }
+    bottom = (uint16_t)(HORIZON_Y + (((int32_t)PLAYER_EYE * PROJ_SCALE) / depth));
+    if (bottom > VIEW_BOTTOM) {
+        bottom = VIEW_BOTTOM;
+    }
+    top = (int16_t)bottom - (int16_t)height;
+    if (top < VIEW_TOP) {
+        top = VIEW_TOP;
+    }
+    if ((uint16_t)top >= bottom) {
+        return 0;
+    }
+    height = (uint16_t)(bottom - (uint16_t)top);
+
+    use_strips = card_count_clamped(card_count, max_strips);
+    if (height < 28u && use_strips > 1u) {
+        use_strips = 1u;
+    }
+    if (use_strips > THING_SPRITE_COUNT - thing_cmd_count) {
+        use_strips = (uint8_t)(THING_SPRITE_COUNT - thing_cmd_count);
+    }
+    if (use_strips == 0u) {
+        return 0;
+    }
+    first_card = (uint8_t)((card_count > use_strips) ? ((card_count - use_strips) / 2u) : 0u);
+    for (uint8_t i = 0; i < use_strips; i++) {
+        int16_t x = (int16_t)(center_x - ((int16_t)use_strips * (int16_t)WALL_STRIP_WIDTH) / 2 + (int16_t)i * (int16_t)WALL_STRIP_WIDTH);
+        emitted += add_thing_strip((uint16_t)(base_card + first_card + i), x, top, height, depth, source_height);
+    }
+    return emitted;
+}
+
+static uint8_t is_pickup_type(uint16_t type) {
+    return (uint8_t)(type == 2007u || type == 2008u || type == 2011u || type == 2012u ||
+                     type == 2014u || type == 2015u || type == 2018u || type == 2019u ||
+                     type == 2028u || type == 2046u || type == 2048u || type == 2049u);
+}
+
+static void render_thing_sprites(void) {
+    uint8_t monsters = 0;
+    uint8_t barrels = 0;
+    uint8_t pickups = 0;
+
+    thing_cmd_count = 0;
+    for (uint16_t i = 0; i < M2_THING_COUNT && i < M3_THING_SCAN_LIMIT && thing_cmd_count < THING_SPRITE_COUNT; i++) {
+        const m2_thing_t *thing = &m2_things[i];
+        if (thing->type == 3001u && monsters < 1u) {
+            monsters = (uint8_t)(monsters + (emit_billboard(M3_CARD_IMP_BASE, M3_CARD_IMP_COUNT, M3_CARD_IMP_HEIGHT, thing->x, thing->y, 3u) != 0u));
+        } else if (thing->type == 3004u && monsters < 1u) {
+            monsters = (uint8_t)(monsters + (emit_billboard(M3_CARD_ZOMBIEMAN_BASE, M3_CARD_ZOMBIEMAN_COUNT, M3_CARD_ZOMBIEMAN_HEIGHT, thing->x, thing->y, 3u) != 0u));
+        } else if (thing->type == 2035u && barrels < 1u) {
+            barrels = (uint8_t)(barrels + (emit_billboard(M3_CARD_BARREL_BASE, M3_CARD_BARREL_COUNT, M3_CARD_BARREL_HEIGHT, thing->x, thing->y, 2u) != 0u));
+        } else if (is_pickup_type(thing->type) && pickups < 1u) {
+            pickups = (uint8_t)(pickups + (emit_billboard(M3_CARD_PICKUP_BASE, M3_CARD_PICKUP_COUNT, M3_CARD_PICKUP_HEIGHT, thing->x, thing->y, 1u) != 0u));
+        }
+        if (monsters && barrels && pickups) {
+            break;
+        }
+    }
+    if (projectile_active && thing_cmd_count < THING_SPRITE_COUNT) {
+        emit_billboard(M3_CARD_PROJECTILE_BASE, M3_CARD_PROJECTILE_COUNT, M3_CARD_PROJECTILE_HEIGHT, projectile_x, projectile_y, 1u);
+    }
+}
+
+static void render_weapon_sprites(void) {
+    int16_t x = (int16_t)((SCREEN_W - (int16_t)M3_CARD_WEAPON_COUNT * (int16_t)WALL_STRIP_WIDTH) / 2);
+    uint8_t muzzle_visible = (uint8_t)(projectile_active && projectile_age < M3_FIRE_FRAME_COUNT);
+    weapon_cmd_count = muzzle_visible ? 0u : M3_CARD_WEAPON_COUNT;
+    muzzle_cmd_count = muzzle_visible ? M3_CARD_MUZZLE_COUNT : 0u;
+    for (uint8_t i = 0; i < M3_CARD_WEAPON_COUNT; i++) {
+        sprite_cmd_t *cmd = &weapon_cmds[i];
+        cmd->card_id = (uint16_t)(M3_CARD_WEAPON_BASE + i);
+        cmd->x = (int16_t)(x + (int16_t)i * (int16_t)WALL_STRIP_WIDTH);
+        cmd->y = (int16_t)(VIEW_BOTTOM - 28);
+        cmd->height = M3_CARD_WEAPON_HEIGHT;
+        cmd->depth = 1u;
+        cmd->width = WALL_STRIP_WIDTH;
+        cmd->x_shrink = 0x0fu;
+        cmd->y_shrink = 0xffu;
+        cmd->size_tiles = size_tiles_for_height(M3_CARD_WEAPON_HEIGHT);
+        cmd->role = ROLE_MIDDLE;
+    }
+    x = (int16_t)((SCREEN_W - (int16_t)M3_CARD_MUZZLE_COUNT * (int16_t)WALL_STRIP_WIDTH) / 2);
+    for (uint8_t i = 0; i < M3_CARD_MUZZLE_COUNT; i++) {
+        sprite_cmd_t *cmd = &muzzle_cmds[i];
+        cmd->card_id = (uint16_t)(M3_CARD_MUZZLE_BASE + i);
+        cmd->x = (int16_t)(x + (int16_t)i * (int16_t)WALL_STRIP_WIDTH);
+        cmd->y = (int16_t)(VIEW_BOTTOM - 28);
+        cmd->height = M3_CARD_MUZZLE_HEIGHT;
+        cmd->depth = 1u;
+        cmd->width = WALL_STRIP_WIDTH;
+        cmd->x_shrink = 0x0fu;
+        cmd->y_shrink = 0xffu;
+        cmd->size_tiles = size_tiles_for_height(M3_CARD_MUZZLE_HEIGHT);
+        cmd->role = ROLE_MIDDLE;
+    }
 }
 
 static uint8_t bbox_visible(const int16_t bbox[4]) {
@@ -646,6 +881,9 @@ static void emit_chunk(uint16_t texture_id, wall_role_t role, int16_t x, int16_t
         return;
     }
     bot = top + (int16_t)height;
+    if (role != ROLE_UPPER && bot < VIEW_BOTTOM) {
+        bot = (int16_t)(bot + WALL_CONTACT_PIXELS);
+    }
     if (top < VIEW_TOP) top = VIEW_TOP;
     if (bot > VIEW_BOTTOM) bot = VIEW_BOTTOM;
     if (bot <= top + 1) return;
@@ -915,7 +1153,7 @@ static void sort_cmds_back_to_front(void) {
 }
 
 static uint8_t compute_peak_scanline(void) {
-    return cmd_count;
+    return (uint8_t)(cmd_count + thing_cmd_count + weapon_cmd_count + muzzle_cmd_count);
 }
 
 static void render_pass(void) {
@@ -946,7 +1184,9 @@ static void render_pass(void) {
         }
     }
     sort_cmds_back_to_front();
-    profile.sprites_emitted = (uint16_t)cmd_count + BG_SPRITE_COUNT;
+    render_thing_sprites();
+    render_weapon_sprites();
+    profile.sprites_emitted = (uint16_t)cmd_count + BG_SPRITE_COUNT + thing_cmd_count + weapon_cmd_count + muzzle_cmd_count;
     profile.max_sprites_scanline = (uint16_t)compute_peak_scanline() + BG_SPRITE_COUNT;
 }
 
@@ -995,6 +1235,20 @@ static void preload_wall_tilemaps(void) {
     }
 }
 
+static void init_m3_sprite_tilemaps(void) {
+    for (uint8_t i = 0; i < THING_SPRITE_COUNT; i++) {
+        write_tilemap((uint16_t)(THING_SPRITE_BASE + i), M3_CARD_PROJECTILE_BASE);
+        thing_shadow_card_id[i] = M3_CARD_PROJECTILE_BASE;
+        thing_shadow_valid[i] = 1;
+    }
+    for (uint8_t i = 0; i < M3_CARD_WEAPON_COUNT; i++) {
+        write_tilemap((uint16_t)(WEAPON_SPRITE_BASE + i), (uint16_t)(M3_CARD_WEAPON_BASE + i));
+    }
+    for (uint8_t i = 0; i < M3_CARD_MUZZLE_COUNT; i++) {
+        write_tilemap((uint16_t)(MUZZLE_SPRITE_BASE + i), (uint16_t)(M3_CARD_MUZZLE_BASE + i));
+    }
+}
+
 static void init_background_sprites(void) {
     uint16_t y_shrink = y_shrink_for_height(SCREEN_H);
 
@@ -1034,6 +1288,45 @@ static void upload_controls(uint8_t count) {
     profile.scb_control_words += (uint16_t)count * 3u;
 }
 
+static void upload_extra_controls(uint16_t base, sprite_cmd_t *extra_cmds, uint8_t visible_count, uint8_t capacity, uint8_t update_tilemaps) {
+    for (uint8_t i = 0; i < capacity; i++) {
+        if (update_tilemaps && i < visible_count) {
+            if (!thing_shadow_valid[i] || thing_shadow_card_id[i] != extra_cmds[i].card_id) {
+                write_tilemap((uint16_t)(base + i), extra_cmds[i].card_id);
+                thing_shadow_card_id[i] = extra_cmds[i].card_id;
+                thing_shadow_valid[i] = 1;
+            }
+        }
+    }
+
+    *REG_VRAMMOD = 1;
+    *REG_VRAMADDR = ADDR_SCB2 + base;
+    for (uint8_t i = 0; i < capacity; i++) {
+        if (i < visible_count) {
+            *REG_VRAMRW = (uint16_t)((extra_cmds[i].x_shrink << 8) | extra_cmds[i].y_shrink);
+        } else {
+            *REG_VRAMRW = 0;
+        }
+    }
+    *REG_VRAMADDR = ADDR_SCB3 + base;
+    for (uint8_t i = 0; i < capacity; i++) {
+        if (i < visible_count) {
+            *REG_VRAMRW = (uint16_t)((scb3_yfield_from_top(extra_cmds[i].y) << 7) | (extra_cmds[i].size_tiles & 0x3fu));
+        } else {
+            *REG_VRAMRW = 0;
+        }
+    }
+    *REG_VRAMADDR = ADDR_SCB4 + base;
+    for (uint8_t i = 0; i < capacity; i++) {
+        if (i < visible_count) {
+            *REG_VRAMRW = (uint16_t)(((uint16_t)(extra_cmds[i].x & 0x01ff)) << 7);
+        } else {
+            *REG_VRAMRW = 0;
+        }
+    }
+    profile.scb_control_words += (uint16_t)capacity * 3u;
+}
+
 static void upload_scene(void) {
     uint8_t active_count = cmd_count > last_cmd_count ? cmd_count : last_cmd_count;
     scb1_rewrites = 0;
@@ -1054,9 +1347,9 @@ static void upload_scene(void) {
                     scb1_rewrites++;
                 } else {
                     scb1_deferred++;
-                    visible = 0;
                     profile.degrade_flags |= NG_DEGRADE_MERGED_WALLS;
                     if (!shadow_valid[i]) {
+                        visible = 0;
                         profile.degrade_flags |= NG_DEGRADE_PANIC_CHUNKS;
                     }
                 }
@@ -1077,6 +1370,9 @@ static void upload_scene(void) {
         }
     }
     upload_controls(active_count);
+    upload_extra_controls(THING_SPRITE_BASE, thing_cmds, thing_cmd_count, THING_SPRITE_COUNT, 1u);
+    upload_extra_controls(WEAPON_SPRITE_BASE, weapon_cmds, weapon_cmd_count, M3_CARD_WEAPON_COUNT, 0u);
+    upload_extra_controls(MUZZLE_SPRITE_BASE, muzzle_cmds, muzzle_cmd_count, M3_CARD_MUZZLE_COUNT, 0u);
     last_cmd_count = cmd_count;
 
     profile.upload_ticks = (uint16_t)((profile.scb1_words + profile.scb_control_words) * STREAM_CYCLES_PER_WORD + ADDR_SET_CYCLES * 4u);
@@ -1102,6 +1398,10 @@ static void update_max_metrics(uint16_t scb_words, uint16_t fit_frames) {
     if (scb_words > max_scb_words) max_scb_words = scb_words;
     if (scb1_rewrites > max_scb1_rewrites) max_scb1_rewrites = scb1_rewrites;
     if (scb1_deferred > max_scb1_deferred) max_scb1_deferred = scb1_deferred;
+    if (thing_cmd_count > max_thing_sprites) max_thing_sprites = thing_cmd_count;
+    if ((uint8_t)(weapon_cmd_count + muzzle_cmd_count) > max_weapon_sprites) {
+        max_weapon_sprites = (uint8_t)(weapon_cmd_count + muzzle_cmd_count);
+    }
     if (fps < min_fps) min_fps = fps;
     for (uint8_t i = 0; i < 3; i++) {
         if (role_counts[i] > max_roles[i]) {
@@ -1130,6 +1430,14 @@ static void draw_overlay(uint16_t scb_words, uint16_t fit_frames) {
     put_overlay_line(9, line);
     snprintf(line, sizeof(line), "TEX R%02u D%02u MAXR%02u D%02u", scb1_rewrites, scb1_deferred, max_scb1_rewrites, max_scb1_deferred);
     put_overlay_line(10, line);
+    snprintf(line, sizeof(line), "M3 THING %02u/%02u WEAP %02u/%02u", thing_cmd_count, max_thing_sprites, (uint16_t)(weapon_cmd_count + muzzle_cmd_count), max_weapon_sprites);
+    put_overlay_line(11, line);
+}
+
+static void draw_status_hud(void) {
+    put_overlay_line(24, "AMMO 050  HEALTH 100  ARMOR 000");
+    put_overlay_line(25, "FACE [:-|]  WPN SHOTGUN  KEY ---");
+    put_overlay_line(26, "M3 WAD SPRITES: POSS TROO BAR1 CLIP");
 }
 
 int main(void) {
@@ -1141,6 +1449,7 @@ int main(void) {
     bios_lsp_1st();
     init_background_sprites();
     preload_wall_tilemaps();
+    init_m3_sprite_tilemaps();
     ram_high_water_bytes = 0;
 
     for (;;) {
@@ -1163,6 +1472,7 @@ int main(void) {
         update_max_metrics(scb_words, fit_frames);
         if ((frame_id & OVERLAY_UPDATE_MASK) == 0) {
             draw_overlay(scb_words, fit_frames);
+            draw_status_hud();
             update_ram_high_water();
         }
         copy_profile_to_mirror();

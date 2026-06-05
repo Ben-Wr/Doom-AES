@@ -25,8 +25,8 @@ fi
 "$PY" "$ROOT/scripts/test_wad2ng_map_synthetic.py"
 "$ROOT/scripts/ram_budget.py"
 "$ROOT/scripts/card_atlas_budget.py" --materials 48 --cards-per-material 8 --phases 4
-"$ROOT/scripts/vram_upload_budget.py" --wall-sprites 55 --thing-sprites 0 --wall-height-tiles 16 --wall-card-change-frac 0.73
-"$ROOT/scripts/vram_upload_budget.py" --wall-sprites 55 --thing-sprites 24 --wall-height-tiles 16 --wall-card-change-frac 0.25
+"$ROOT/scripts/vram_upload_budget.py" --wall-sprites 53 --thing-sprites 0 --wall-height-tiles 16 --wall-card-change-frac 0.73
+"$ROOT/scripts/vram_upload_budget.py" --wall-sprites 53 --thing-sprites 24 --wall-height-tiles 16 --wall-card-change-frac 0.25
 
 if [ ! -f "$M2_WAD" ]; then
   printf "M2 WAD is required for the full host gate: %s\n" "$M2_WAD" >&2

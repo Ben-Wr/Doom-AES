@@ -2,10 +2,11 @@
 
 Date: 2026-06-04
 
-Status: **M2 runtime boots in MAME with real E1M1 geometry, WAD-derived wall cards, and a
-hardened (numeric) capture gate. NOT passing the M2 readability bar.** A 2026-06-04 analysis
+Status: **M2 numeric gate passes and the first M3 proof slice runs in MAME with real
+E1M1 geometry, WAD-derived wall cards, WAD-derived thing/weapon/projectile sprites, and a
+hardened capture gate. NOT passing the full M3 combat/readability bar yet.** A 2026-06-04 analysis
 pass (see [docs/14](../../docs/14_renderer_diagnosis_and_optimal_path.md)) identified the
-"garbled vertical" corruption as a real, unfixed bug — a fixed SCB3 window size — and found
+"garbled vertical" corruption as a fixed SCB3 window-size bug and found
 that the wall budget was reduced (92→40) to chase the fps floor even though no sprite/SCB
 limit was being hit. The numeric gate is green; the readability gate is not yet defined or met.
 
@@ -37,12 +38,16 @@ deterministic merge/degrade pass targeting sprite headroom below the 96-sprite h
 SCB1 texture tilemap rewrite cap with deferred card changes for vblank safety
 row-major wall-card tilemap indexing for generated C-ROM atlas cards
 static sky/floor backdrop sprites to remove the all-black void in sparse fallback views
-55-wall fallback target with 40 per-frame 16-tile card rewrites; deferred card changes are hidden instead of drawing stale texture data
+53-wall M3 target with 40 per-frame 16-tile card rewrites; deferred card changes keep the stale cached card visible to avoid wall flicker
 256px wall-card convention avoids the 32-tile vertical-shrink repeat that caused lower-half stripe corruption
 per-strip depth/top-bottom projection for less rectangular wall silhouettes
 visual comparison artifacts for source textures, atlas reconstruction, host command projection, and MAME captures
 fix-layer overlay for BSP/seg/sprite/SCB/degrade/texture-rewrite metrics
 hardened MAME Lua gate for profile liveness, frame progression, SCB/RAM/sprite budgets, panic flags, and named captures
+WAD-derived M3 sprite-card extraction from the user-supplied WAD: SHTGA0, SHTGB0, POSSA1, TROOA1, BAR1A0, CLIPA0, BAL1A0
+M3 runtime proof: foreground shotgun frame, fire/reload frame replacement, world-space projectile, one visible monster/barrel/pickup path, simple fix-layer HUD
+collision-safe auto-demo movement so captures stay in the WAD start geometry instead of drifting through linedefs
+generated sky/floor backdrop ramp and small wall-foot extension to reduce the "floating island" read
 ```
 
 ## Local E1M1 Compile
@@ -127,29 +132,33 @@ build/visual/e1m1_host_command_compare.png
 build/visual/e1m1_mame_contact_sheet.png
 ```
 
-Observed hardened gate summary:
+Observed hardened gate summary (M3 proof slice):
 
 ```text
 profile samples:       1080
-frame progressions:     114
-max sprites:             75
-max peak sprites/line:   75
-max SCB words:         1445
-max RAM high-water:    4812 bytes
+frame progressions:     109
+max sprites:             81
+max peak sprites/line:   81
+max SCB words:         1487
+max RAM high-water:    5096 bytes
 degrade flags:       $0001 (merged wall buckets only)
 panic degrade:       absent
 max window slack:        15 px
+max thing sprites:        4
+max weapon sprites:       6
 captures:                5
 ```
 
 This pass proves real E1M1 geometry traversal, real WAD-derived wall materials,
 runtime card selection, dynamic tile-height wall windows, transparent wall-card guard lines,
-16-tile SCB1 rewrite limiting, and conservative branch culling.
+16-tile SCB1 rewrite limiting, conservative branch culling, WAD-derived M3 sprite-card
+assembly, world-space projectile projection, and a foreground weapon reserve.
 It also proves the capture harness now rejects panic frames, stale profile
-fields, missing frame progression, missing captures, oversized wall-window slack, and budget
-overruns. Visuals are materially better than the prior garbled/blank state, but still a
-coarse wall-only fallback; authored material families, palette depth lighting, and gameplay
-sprites remain the next quality jump.
+fields, missing frame progression, missing captures, missing M3 thing/weapon emission,
+oversized wall-window slack, and budget overruns. Visuals are materially better than the
+prior garbled/blank state, but still a coarse proof slice: full hitscan/damage/barrel-chain
+combat, authored material families, palette depth lighting, and real sector floor/ceiling
+treatment remain the next quality jump.
 
 ## Diagnosis (2026-06-04 analysis pass — see docs/14)
 
@@ -175,11 +184,12 @@ MISDIAGNOSIS (fps): walls were cut 92->55->40 to pass the 6fps floor, but this r
   (SSIM) gate.
 ```
 
-floor/ceiling fill is also still a placeholder backdrop (the timer-IRQ two-band split and
-palette depth-lighting are not yet wired). Next pass should target the above in order.
+floor/ceiling fill is still a generated backdrop ramp rather than a real sector/flat renderer
+(the timer-IRQ two-band split, per-sector color, and palette depth-lighting are not yet wired).
+Next pass should target the above in order.
 
 MAME bench:
 
 ```text
-Average speed: 887.22% (latest full host-test MAME gate)
+Average speed: 536.08% (latest full host-test MAME gate)
 ```

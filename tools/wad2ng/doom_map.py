@@ -577,6 +577,7 @@ def write_c_header(doom_map: DoomMap, path: Path) -> None:
         "typedef struct { uint16_t v1; uint16_t v2; int16_t angle; uint16_t linedef; int16_t side; int16_t offset; uint16_t length; } m2_seg_t;",
         "typedef struct { uint16_t seg_count; uint16_t first_seg; } m2_subsector_t;",
         "typedef struct { int16_t x; int16_t y; int16_t dx; int16_t dy; int16_t bbox[2][4]; uint16_t child[2]; } m2_node_t;",
+        "typedef struct { int16_t x; int16_t y; uint16_t angle; uint16_t type; uint16_t flags; } m2_thing_t;",
         "",
         "static const m2_vertex_t m2_vertices[] = {",
     ]
@@ -650,6 +651,15 @@ def write_c_header(doom_map: DoomMap, path: Path) -> None:
         )
         for node in doom_map.nodes
     )
+    lines.append("};")
+    lines.append("")
+    lines.append("static const m2_thing_t m2_things[] = {")
+    lines.extend(
+        f"    {{ {thing.x}, {thing.y}, {thing.angle & 0xFFFF}u, {thing.type & 0xFFFF}u, {thing.flags & 0xFFFF}u }},"
+        for thing in doom_map.things
+    )
+    if not doom_map.things:
+        lines.append("    { 0, 0, 0u, 0u, 0u },")
     lines.append("};")
     lines.append("")
     lines.append("#endif")
