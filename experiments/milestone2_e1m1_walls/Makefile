@@ -9,11 +9,16 @@ WAD ?= $(ROOT)/iwads/DOOM1.WAD
 MAP ?= E1M1
 MAP_LOWER := $(shell printf '%s' '$(MAP)' | tr '[:upper:]' '[:lower:]')
 LONG_NAME := Doom AES M2 $(MAP) Walls
+empty :=
+space := $(empty) $(empty)
+escaped_space := \$(space)
+WAD_DEP := $(subst $(space),$(escaped_space),$(WAD))
 
 BUILDDIR := build
 GENERATED := $(BUILDDIR)/generated
 ASSETDIR := $(BUILDDIR)/assets
 ROMDIR := $(BUILDDIR)/rom
+VISUALDIR := $(BUILDDIR)/visual
 
 PROMSIZE := 524288
 SROMSIZE := 131072
@@ -42,9 +47,12 @@ ROMTOOL_CMD := PYTHONPATH=$(ROMTOOL_PYTHONPATH) $(HOST_PYTHON) $(ROMTOOL_REAL)
 GNGEO_DATA_ORIG := $(shell dirname "$$(which $(GNGEO))")/../share/ngdevkit-gngeo/gngeo_data.zip
 ASSET_TOOL := ../milestone0_sprite_path/tools/make_assets.py
 
-CFLAGS := -std=c99 -fomit-frame-pointer -O2 -g -I../common -I$(GENERATED) \
+WARN_CFLAGS ?= -Wall -Wextra
+CFLAGS_EXTRA ?=
+CFLAGS := -std=c99 -fomit-frame-pointer -O3 -g -I../common -I$(GENERATED) \
 	-DM2_MAP_HEADER=\"$(MAP_LOWER)_map_data.h\" \
-	-DM2_WALL_CARDS_HEADER=\"$(MAP_LOWER)_wall_cards.h\"
+	-DM2_WALL_CARDS_HEADER=\"$(MAP_LOWER)_wall_cards.h\" \
+	$(WARN_CFLAGS) $(CFLAGS_EXTRA)
 LDFLAGS :=
 
 MAP_HEADER := $(GENERATED)/$(MAP_LOWER)_map_data.h
@@ -77,21 +85,25 @@ BIOS := $(ROMDIR)/neogeo.zip
 
 all: $(NEO) $(MAME_HASH) $(GNGEO_DATA) $(BIOS)
 
-$(BUILDDIR) $(GENERATED) $(ASSETDIR) $(ROMDIR):
+$(BUILDDIR) $(GENERATED) $(ASSETDIR) $(ROMDIR) $(VISUALDIR):
 	mkdir -p $@
 
-$(MAP_HEADER) $(MAP_REPORT) $(MAP_BANK) $(MAP_PREVIEW): $(WAD) $(ROOT)/tools/wad2ng/cli.py $(ROOT)/tools/wad2ng/doom_map.py | $(GENERATED)
+$(MAP_HEADER) $(MAP_REPORT) $(MAP_BANK) $(MAP_PREVIEW): $(WAD_DEP) $(ROOT)/tools/wad2ng/cli.py $(ROOT)/tools/wad2ng/doom_map.py | $(GENERATED)
 	test -f "$(WAD)"
 	PYTHONPATH=$(ROOT) $(PYTHON) -m tools.wad2ng.cli compile-map "$(WAD)" \
 		--map $(MAP) --out $(GENERATED) --emit-header --emit-svg
 
 compile-map: $(MAP_HEADER) $(MAP_REPORT) $(MAP_BANK) $(MAP_PREVIEW)
 
-$(WALL_ATLAS_GIF) $(WALL_ATLAS_REPORT) $(WALL_ATLAS_HEADER): $(WAD) $(MAP_REPORT) $(ROOT)/tools/wad2ng/cli.py $(ROOT)/tools/wad2ng/doom_texture.py | $(GENERATED)
+$(WALL_ATLAS_GIF) $(WALL_ATLAS_REPORT) $(WALL_ATLAS_HEADER): $(WAD_DEP) $(MAP_REPORT) $(ROOT)/tools/wad2ng/cli.py $(ROOT)/tools/wad2ng/doom_texture.py | $(GENERATED)
 	PYTHONPATH=$(ROOT) $(PYTHON) -m tools.wad2ng.cli compile-wall-atlas "$(WAD)" \
 		--map $(MAP) --out $(GENERATED)
 
 compile-wall-atlas: $(WALL_ATLAS_GIF) $(WALL_ATLAS_REPORT) $(WALL_ATLAS_HEADER)
+
+visual-compare: $(WALL_ATLAS_GIF) $(WALL_ATLAS_REPORT) $(WALL_ATLAS_HEADER) | $(VISUALDIR)
+	PYTHONPATH=$(ROOT) $(PYTHON) tools/visual_compare.py \
+		--wad "$(WAD)" --map $(MAP) --generated $(GENERATED) --out $(VISUALDIR)
 
 $(FIX_GIF): $(ASSET_TOOL) | $(ASSETDIR)
 	$(PYTHON) $(ASSET_TOOL) --fix $(FIX_GIF) --card $(ASSETDIR)/unused_card.gif
@@ -169,16 +181,22 @@ mame-bench: $(CART) $(MAME_HASH) $(BIOS)
 mame-capture: $(CART) $(MAME_HASH) $(BIOS)
 	rm -rf $(BUILDDIR)/snap
 	mkdir -p $(BUILDDIR)/snap
-	rm -f $(BUILDDIR)/m2_profile.tsv $(BUILDDIR)/m2_profile_errors.log
+	rm -f $(BUILDDIR)/m2_profile.tsv $(BUILDDIR)/m2_profile_errors.log $(BUILDDIR)/m2_profile_summary.tsv
 	$(MAME) -cfg_directory $(BUILDDIR)/cfg -nvram_directory $(BUILDDIR)/nvram \
 		-snapshot_directory $(BUILDDIR)/snap -hashpath $(BUILDDIR) \
 		-rompath $(ROMDIR) neogeo $(GAMEROM) -skip_gameinfo -nothrottle \
 		-seconds_to_run 60 -autoboot_script tools/mame_capture.lua
 	test -f $(BUILDDIR)/m2_profile.tsv
+	test -f $(BUILDDIR)/m2_profile_summary.tsv
 	test "$$(wc -l < $(BUILDDIR)/m2_profile.tsv)" -gt 1
 	test ! -s $(BUILDDIR)/m2_profile_errors.log
+	PYTHONPATH=$(ROOT) $(PYTHON) tools/visual_compare.py \
+		--wad "$(WAD)" --map $(MAP) --generated $(GENERATED) --snap $(BUILDDIR)/snap --out $(VISUALDIR)
+
+audit-warnings:
+	$(MAKE) clean all CFLAGS_EXTRA="-Wconversion -Wsign-conversion"
 
 clean:
 	rm -rf $(BUILDDIR)
 
-.PHONY: all compile-map compile-wall-atlas gngeo mame mame-bench mame-capture clean
+.PHONY: all compile-map compile-wall-atlas visual-compare gngeo mame mame-bench mame-capture audit-warnings clean

@@ -236,9 +236,72 @@ def _parse_nodes(data: bytes) -> list[Node]:
     return nodes
 
 
+def _check_index(errors: list[str], label: str, value: int, count: int, allow_minus_one: bool = False) -> None:
+    if allow_minus_one and value == -1:
+        return
+    if value < 0 or value >= count:
+        errors.append(f"{label} index {value} outside 0..{max(0, count - 1)}")
+
+
+def _validate_map(doom_map: DoomMap) -> None:
+    errors: list[str] = []
+
+    if not doom_map.vertices:
+        errors.append("VERTEXES is empty")
+    if not doom_map.linedefs:
+        errors.append("LINEDEFS is empty")
+    if not doom_map.sidedefs:
+        errors.append("SIDEDEFS is empty")
+    if not doom_map.sectors:
+        errors.append("SECTORS is empty")
+    if not doom_map.segs:
+        errors.append("SEGS is empty")
+    if not doom_map.subsectors:
+        errors.append("SSECTORS is empty")
+
+    for index, line in enumerate(doom_map.linedefs):
+        _check_index(errors, f"LINEDEFS[{index}].v1", line.v1, len(doom_map.vertices))
+        _check_index(errors, f"LINEDEFS[{index}].v2", line.v2, len(doom_map.vertices))
+        _check_index(errors, f"LINEDEFS[{index}].right_sidedef", line.right_sidedef, len(doom_map.sidedefs))
+        _check_index(errors, f"LINEDEFS[{index}].left_sidedef", line.left_sidedef, len(doom_map.sidedefs), allow_minus_one=True)
+
+    for index, side in enumerate(doom_map.sidedefs):
+        _check_index(errors, f"SIDEDEFS[{index}].sector", side.sector, len(doom_map.sectors))
+
+    for index, seg in enumerate(doom_map.segs):
+        _check_index(errors, f"SEGS[{index}].v1", seg.v1, len(doom_map.vertices))
+        _check_index(errors, f"SEGS[{index}].v2", seg.v2, len(doom_map.vertices))
+        _check_index(errors, f"SEGS[{index}].linedef", seg.linedef, len(doom_map.linedefs))
+        if seg.side not in (0, 1):
+            errors.append(f"SEGS[{index}].side value {seg.side} is not 0 or 1")
+        elif 0 <= seg.linedef < len(doom_map.linedefs):
+            line = doom_map.linedefs[seg.linedef]
+            front_side = line.right_sidedef if seg.side == 0 else line.left_sidedef
+            _check_index(errors, f"SEGS[{index}] front sidedef", front_side, len(doom_map.sidedefs))
+
+    for index, subsector in enumerate(doom_map.subsectors):
+        if subsector.seg_count == 0:
+            errors.append(f"SSECTORS[{index}].seg_count is zero")
+        if subsector.first_seg > len(doom_map.segs) or subsector.first_seg + subsector.seg_count > len(doom_map.segs):
+            errors.append(
+                f"SSECTORS[{index}] seg range {subsector.first_seg}..{subsector.first_seg + subsector.seg_count} exceeds {len(doom_map.segs)} segs"
+            )
+
+    for index, node in enumerate(doom_map.nodes):
+        for child_index, child in enumerate(node.child):
+            if child & 0x8000:
+                _check_index(errors, f"NODES[{index}].child[{child_index}] subsector", child & 0x7FFF, len(doom_map.subsectors))
+            else:
+                _check_index(errors, f"NODES[{index}].child[{child_index}] node", child, len(doom_map.nodes))
+
+    if errors:
+        detail = "\n  - ".join(errors)
+        raise ValueError(f"{doom_map.name} validation failed:\n  - {detail}")
+
+
 def read_map(wad: Wad, map_name: str) -> DoomMap:
     lumps = _map_lump_dict(wad, map_name)
-    return DoomMap(
+    doom_map = DoomMap(
         name=map_name.upper(),
         things=_parse_things(wad.read_lump(_require_lump(lumps, "THINGS"))),
         vertices=_parse_vertices(wad.read_lump(_require_lump(lumps, "VERTEXES"))),
@@ -251,6 +314,8 @@ def read_map(wad: Wad, map_name: str) -> DoomMap:
         reject_size=lumps.get("REJECT").size if lumps.get("REJECT") else 0,
         blockmap_size=lumps.get("BLOCKMAP").size if lumps.get("BLOCKMAP") else 0,
     )
+    _validate_map(doom_map)
+    return doom_map
 
 
 def texture_table(doom_map: DoomMap) -> list[str]:

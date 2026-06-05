@@ -35,7 +35,9 @@ ROMTOOL_CMD := PYTHONPATH=$(ROMTOOL_PYTHONPATH) $(PYTHON) $(ROMTOOL_REAL)
 GNGEO_DATA_ORIG := $(shell dirname "$$(which $(GNGEO))")/../share/ngdevkit-gngeo/gngeo_data.zip
 ASSET_TOOL := ../milestone0_sprite_path/tools/make_assets.py
 
-CFLAGS := -std=c99 -fomit-frame-pointer -O2 -g -I../common
+WARN_CFLAGS ?= -Wall -Wextra
+CFLAGS_EXTRA ?=
+CFLAGS := -std=c99 -fomit-frame-pointer -O2 -g -I../common $(WARN_CFLAGS) $(CFLAGS_EXTRA)
 LDFLAGS :=
 
 ELF := $(BUILDDIR)/rom.elf

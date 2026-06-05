@@ -34,7 +34,9 @@ ROMTOOL_PYTHONPATH := $(shell find "$(NGPREFIX)/libexec/lib" -maxdepth 2 -type d
 ROMTOOL_CMD := PYTHONPATH=$(ROMTOOL_PYTHONPATH) $(PYTHON) $(ROMTOOL_REAL)
 GNGEO_DATA_ORIG := $(shell dirname "$$(which $(GNGEO))")/../share/ngdevkit-gngeo/gngeo_data.zip
 
-CFLAGS := -std=c99 -fomit-frame-pointer -O2 -g -I../../../experiments/common
+WARN_CFLAGS ?= -Wall -Wextra
+CFLAGS_EXTRA ?=
+CFLAGS := -std=c99 -fomit-frame-pointer -O2 -g -I../../../experiments/common $(WARN_CFLAGS) $(CFLAGS_EXTRA)
 LDFLAGS :=
 
 ELF := $(BUILDDIR)/rom.elf

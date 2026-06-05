@@ -13,9 +13,13 @@ from .doom_picture import render_picture
 from .wad import Wad
 
 
-WALL_CARD_HEIGHT = 512
+WALL_CARD_HEIGHT = 256
 WALL_CARD_WIDTH = 16
 WALL_SLICE_WIDTH = 16
+WALL_CARD_SAMPLE_WIDTH = 16
+WALL_OPAQUE_FILL_INDEX = 9
+WALL_CARD_TILES = WALL_CARD_HEIGHT // 16
+WALL_CARD_BYTES_4BPP = WALL_CARD_WIDTH * WALL_CARD_HEIGHT // 2
 
 
 @dataclass(frozen=True)
@@ -110,9 +114,16 @@ def alpha_composite_clipped(base: Image.Image, patch: Image.Image, x: int, y: in
     base.alpha_composite(crop, (left, top))
 
 
-def compose_texture(texture: WallTexture, patch_names: list[str], patches: dict[str, bytes], palette: list[tuple[int, int, int]]) -> Image.Image:
+def compose_texture(
+    texture: WallTexture,
+    patch_names: list[str],
+    patches: dict[str, bytes],
+    palette: list[tuple[int, int, int]],
+    patch_cache: dict[str, Image.Image] | None = None,
+) -> Image.Image:
     image = Image.new("RGBA", (max(1, texture.width), max(1, texture.height)), (0, 0, 0, 0))
     patch_errors = []
+    cache = patch_cache if patch_cache is not None else {}
     for patch in texture.patches:
         if patch.patch_index < 0 or patch.patch_index >= len(patch_names):
             patch_errors.append(f"{texture.name}: invalid PNAMES index {patch.patch_index}")
@@ -122,7 +133,10 @@ def compose_texture(texture: WallTexture, patch_names: list[str], patches: dict[
         if patch_data is None:
             patch_errors.append(f"{texture.name}: missing patch lump {patch_name}")
             continue
-        patch_image, _info = render_picture(patch_data, palette)
+        patch_image = cache.get(patch_name)
+        if patch_image is None:
+            patch_image, _info = render_picture(patch_data, palette)
+            cache[patch_name] = patch_image
         alpha_composite_clipped(image, patch_image, patch.x, patch.y)
     if patch_errors:
         raise ValueError("texture patch composition failed: " + "; ".join(patch_errors))
@@ -138,7 +152,7 @@ def fixed_palette() -> list[tuple[int, int, int]]:
         (235, 164, 74),
         (80, 150, 105),
         (67, 128, 180),
-        (130, 88, 170),
+        (112, 96, 84),
         (229, 218, 136),
         (38, 40, 48),
         (97, 62, 46),
@@ -172,6 +186,32 @@ def palette_bytes(palette: list[tuple[int, int, int]]) -> list[int]:
     return out + [0] * ((256 * 3) - len(out))
 
 
+def palette_image(palette: list[tuple[int, int, int]]) -> Image.Image:
+    image = Image.new("P", (1, 1), 0)
+    image.putpalette(palette_bytes(palette))
+    return image
+
+
+def palettize_texture(texture_image: Image.Image, palette: list[tuple[int, int, int]]) -> Image.Image:
+    if texture_image.width <= 0 or texture_image.height <= 0:
+        out = Image.new("P", (max(1, texture_image.width), max(1, texture_image.height)), WALL_OPAQUE_FILL_INDEX)
+        out.putpalette(palette_bytes(palette))
+        return out
+
+    rgba = texture_image.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    rgb = Image.new("RGB", rgba.size, palette[WALL_OPAQUE_FILL_INDEX])
+    rgb.paste(rgba.convert("RGB"), mask=alpha)
+    dither_none = getattr(getattr(Image, "Dither", Image), "NONE", 0)
+    out = rgb.quantize(palette=palette_image(palette), dither=dither_none)
+    out.putpalette(palette_bytes(palette))
+    transparent = alpha.point(lambda value: 255 if value == 0 else 0)
+    out.paste(WALL_OPAQUE_FILL_INDEX, mask=transparent)
+    out = out.point([WALL_OPAQUE_FILL_INDEX if index == 0 else index for index in range(256)])
+    out.putpalette(palette_bytes(palette))
+    return out
+
+
 def card_count_for_width(width: int) -> int:
     return max(1, math.ceil(max(1, width) / WALL_SLICE_WIDTH))
 
@@ -181,12 +221,30 @@ def texture_card(texture_image: Image.Image, palette: list[tuple[int, int, int]]
     out.putpalette(palette_bytes(palette))
     if texture_image.width <= 0 or texture_image.height <= 0:
         return out
-    src = texture_image.load()
-    for y in range(WALL_CARD_HEIGHT):
-        sy = y % texture_image.height
-        for x in range(WALL_CARD_WIDTH):
-            sx = (u_offset + x) % texture_image.width
-            out.putpixel((x, y), nearest_palette_index(src[sx, sy], palette))
+
+    src = texture_image if texture_image.mode == "P" else palettize_texture(texture_image, palette)
+    src.putpalette(palette_bytes(palette))
+    sample_width = min(max(src.width, WALL_CARD_WIDTH), WALL_CARD_SAMPLE_WIDTH)
+    sample = Image.new("P", (sample_width, src.height), WALL_OPAQUE_FILL_INDEX)
+    sample.putpalette(palette_bytes(palette))
+
+    x = 0
+    sx = u_offset % src.width
+    while x < sample_width:
+        width = min(src.width - sx, sample_width - x)
+        sample.paste(src.crop((sx, 0, sx + width, src.height)), (x, 0))
+        x += width
+        sx = 0
+
+    resampling = getattr(getattr(Image, "Resampling", Image), "BOX", Image.NEAREST)
+    dither_none = getattr(getattr(Image, "Dither", Image), "NONE", 0)
+    sample_rgb = sample.convert("RGB")
+    detail_rgb = sample_rgb.resize((WALL_CARD_WIDTH, WALL_CARD_HEIGHT), resample=resampling)
+    band_rgb = sample_rgb.resize((1, sample.height), resample=resampling).resize((WALL_CARD_WIDTH, WALL_CARD_HEIGHT), resample=resampling)
+    rgb = Image.blend(band_rgb, detail_rgb, 0.55)
+    out = rgb.quantize(palette=palette_image(palette), dither=dither_none)
+    out = out.point([WALL_OPAQUE_FILL_INDEX if index == 0 else index for index in range(256)])
+    out.putpalette(palette_bytes(palette))
     return out
 
 
@@ -194,6 +252,7 @@ def fallback_card(texture_name: str, palette: list[tuple[int, int, int]]) -> Ima
     out = Image.new("P", (WALL_CARD_WIDTH, WALL_CARD_HEIGHT), 0)
     out.putpalette(palette_bytes(palette))
     seed = sum(ord(ch) for ch in texture_name)
+    pixels = []
     for y in range(WALL_CARD_HEIGHT):
         for x in range(WALL_CARD_WIDTH):
             if y == WALL_CARD_HEIGHT - 1:
@@ -204,7 +263,21 @@ def fallback_card(texture_name: str, palette: list[tuple[int, int, int]]) -> Ima
                 value = 4 + (seed % 4)
             else:
                 value = 9 + ((x + y // 16 + seed) % 5)
-            out.putpixel((x, y), value)
+            pixels.append(value)
+    out.putdata(pixels)
+    return out
+
+
+def background_card(palette: list[tuple[int, int, int]]) -> Image.Image:
+    out = Image.new("P", (WALL_CARD_WIDTH, WALL_CARD_HEIGHT), 0)
+    out.putpalette(palette_bytes(palette))
+    split = WALL_CARD_HEIGHT // 2
+    pixels = []
+    for y in range(WALL_CARD_HEIGHT):
+        value = 14 if y < split else 12
+        for _x in range(WALL_CARD_WIDTH):
+            pixels.append(value)
+    out.putdata(pixels)
     return out
 
 
@@ -279,18 +352,20 @@ def build_wall_atlas(wad: Wad, map_name: str, palette_index: int = 0) -> tuple[I
     patch_names = read_pnames(wad)
     patches = patch_lump_lookup(wad)
     card_palette = fixed_palette()
+    rendered_patch_cache: dict[str, Image.Image] = {}
 
     prepared = []
-    total_cards = 0
+    total_cards = 1
     for name in used_textures:
         texture = textures.get(name)
         if texture is None:
             card_count = 1
             prepared.append((name, None, None, card_count))
         else:
-            composed = compose_texture(texture, patch_names, patches, doom_palette)
+            composed = compose_texture(texture, patch_names, patches, doom_palette, rendered_patch_cache)
+            paletted = palettize_texture(composed, card_palette)
             card_count = card_count_for_width(texture.width)
-            prepared.append((name, texture, composed, card_count))
+            prepared.append((name, texture, paletted, card_count))
         total_cards += card_count
 
     atlas = Image.new("P", (max(1, total_cards) * WALL_CARD_WIDTH, WALL_CARD_HEIGHT), 0)
@@ -298,7 +373,8 @@ def build_wall_atlas(wad: Wad, map_name: str, palette_index: int = 0) -> tuple[I
     records = []
     missing = []
     family_base: dict[str, int] = {}
-    card_cursor = 0
+    card_cursor = 1
+    atlas.paste(background_card(card_palette), (0, 0))
     for index, (name, texture, composed, card_count) in enumerate(prepared):
         base_card = card_cursor
         family_card = family_base.setdefault(texture_family(name), base_card)
@@ -327,8 +403,8 @@ def build_wall_atlas(wad: Wad, map_name: str, palette_index: int = 0) -> tuple[I
                 "source_width": width,
                 "source_height": height,
                 "patches": patch_count,
-                "tiles": card_count * 32,
-                "bytes_4bpp": card_count * 4096,
+                "tiles": card_count * WALL_CARD_TILES,
+                "bytes_4bpp": card_count * WALL_CARD_BYTES_4BPP,
             }
         )
         card_cursor += card_count
@@ -339,11 +415,12 @@ def build_wall_atlas(wad: Wad, map_name: str, palette_index: int = 0) -> tuple[I
         "texture_count": len(records),
         "missing_textures": missing,
         "cards": total_cards,
+        "background_card": 0,
         "card_width": WALL_CARD_WIDTH,
         "card_height": WALL_CARD_HEIGHT,
         "slice_width": WALL_SLICE_WIDTH,
-        "tiles": total_cards * 32,
-        "bytes_4bpp": total_cards * 4096,
+        "tiles": total_cards * WALL_CARD_TILES,
+        "bytes_4bpp": total_cards * WALL_CARD_BYTES_4BPP,
         "notes": [
             "M2 atlas composes Doom TEXTURE patches into 16px U-slice wall cards",
             "material palette is a first fixed 15-color reduction; per-material palettes are next",

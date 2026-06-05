@@ -148,14 +148,28 @@ Gate (all required):
 
 ```text
 [ ] A first-time player recognizes E1M1 (start room, courtyard, zigzag, exit).
+[ ] AUTOMATED recognizability: MAME capture vs host reference passes a structural-
+    similarity threshold (e.g. SSIM >= 0.6) on the named worst-case poses, via
+    tools/visual_compare.py. The numeric budget gate is necessary but NOT sufficient.
+[ ] NO last-line-repeat / window-mismatch texture garbage: dynamic window sizing +
+    transparent guard line in effect (see docs/03 "Vertical: window vs shrink").
 [ ] Peak sprites/line NEVER exceeds 96 -- degrade ladder engages before overflow.
 [ ] >= 10 fps in ordinary rooms; >= 6 fps in the worst sightline.
+[ ] The fps floor is met at the documented wall-chunk budget (~40-48 visible chunks),
+    NOT by shrinking the wall budget. fps is a CPU result; if the floor fails, cut
+    per-frame CPU (occlusion, precomputed visibility, reciprocal tables) -- do not
+    delete walls to pass. (See docs/14 sec 4.)
+[ ] Per-frame CPU is MEASURED (cycle/scanline-time per phase: BSP walk, projection,
+    interpolation, upload) and the bottleneck is named in RESULT.md. The harness must
+    profile CPU, not only sprite/SCB/RAM counters.
 [ ] Degradation is deterministic: same view -> same drops, every time.
 [ ] Map data is banked P-ROM; no runtime WAD parsing; no zone allocator.
-[ ] Worst-case suite logged (fps, peak sprites/line, SCB words, RAM) per scene.
+[ ] Worst-case suite logged (fps, peak sprites/line, SCB words, RAM, CPU) per scene.
 ```
 
-Kill: E1M1 unreadable with generous ROM, OR overflow cannot be prevented deterministically.
+Kill: E1M1 unreadable with generous ROM, OR overflow cannot be prevented deterministically,
+OR the fps floor can only be met by dropping below the documented wall-chunk budget (that
+indicates a CPU-architecture problem to fix, not a content cut to accept).
 
 ## M3 — Things And Weapons
 

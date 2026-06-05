@@ -17,17 +17,19 @@
 #include M2_WALL_CARDS_HEADER
 
 #define CARD_START_TILE 256u
-#define CARD_TILE_COUNT 32u
-#define CARD_SOURCE_HEIGHT_PX 512u
+#define CARD_TILE_COUNT 16u
+#define CARD_SOURCE_HEIGHT_PX 256u
+#define BG_SPRITE_BASE 0u
+#define BG_SPRITE_COUNT 20u
 #define SPRITE_BASE 32u
 #define MAX_CMDS 96u
 #define PROFILE_MIRROR_ADDR 0x10e080u
 
 #define SCREEN_W 320
 #define SCREEN_H 224
-#define VIEW_TOP 96
+#define VIEW_TOP 16
 #define VIEW_BOTTOM 224
-#define HORIZON_Y 154
+#define HORIZON_Y 112
 #define FOCAL 184
 #define PROJ_SCALE 220
 #define NEAR_Z 28
@@ -45,13 +47,14 @@
 #define OCC_BUCKETS 32u
 #define DEMO_CYCLE_FRAMES 960u
 #define RENDER_PASS_COUNT 6u
-#define TARGET_SPRITES 92u
+#define TARGET_SPRITES 55u
+#define TARGET_TOTAL_SPRITES (TARGET_SPRITES + BG_SPRITE_COUNT)
 #define TARGET_PEAK 94u
-#define MAX_SCB1_REWRITES 20u
-#define TEXTURE_COARSE_Z 260u
+#define MAX_SCB1_REWRITES 40u
+#define TEXTURE_COARSE_Z 520u
 #define FAMILY_TEXTURE_LOD 5u
 #define FAMILY_TEXTURE_Z 760u
-#define FRUSTUM_MARGIN_PX 64
+#define FRUSTUM_MARGIN_PX 16
 #define WALL_STRIP_WIDTH 16u
 #define OVERLAY_UPDATE_MASK 3u
 
@@ -94,6 +97,8 @@ static uint16_t ctrl_scb2[MAX_CMDS];
 static uint16_t ctrl_scb3[MAX_CMDS];
 static uint16_t ctrl_scb4[MAX_CMDS];
 static uint16_t bucket_depth[OCC_BUCKETS];
+static int16_t vertex_x_cache[M2_VERTEX_COUNT];
+static int16_t vertex_y_cache[M2_VERTEX_COUNT];
 static uint8_t bucket_filled[OCC_BUCKETS];
 static player_t player;
 static ng_profile_frame_t profile;
@@ -105,6 +110,8 @@ static uint8_t bucket_size;
 static uint8_t auto_demo;
 static uint16_t demo_frame;
 static uint8_t pass_overflow;
+static uint8_t pass_budget_dropped;
+static uint8_t pass_budget_replaced;
 static uint8_t scb1_rewrites;
 static uint8_t scb1_deferred;
 static uint8_t max_scb1_rewrites;
@@ -116,10 +123,15 @@ static uint8_t max_sprites;
 static uint16_t max_scb_words;
 static uint8_t min_fps;
 static uint16_t ram_high_water_bytes;
+static uint16_t palette_words_resident;
 static uint16_t segs_visited;
 static uint16_t subsectors_visited;
 static uint16_t nodes_visited;
 static uint16_t nodes_culled;
+static int16_t view_cos_q8;
+static int16_t view_sin_q8;
+static int16_t view_right_x_q8;
+static int16_t view_right_y_q8;
 static uint8_t guard_asserted;
 
 extern uint8_t _end;
@@ -137,11 +149,18 @@ static int16_t cos_q8(uint8_t angle) {
 }
 
 static int16_t vertex_x(uint16_t index) {
-    return (int16_t)(m2_vertices[index].x >> 16);
+    return vertex_x_cache[index];
 }
 
 static int16_t vertex_y(uint16_t index) {
-    return (int16_t)(m2_vertices[index].y >> 16);
+    return vertex_y_cache[index];
+}
+
+static void init_geometry_cache(void) {
+    for (uint16_t i = 0; i < M2_VERTEX_COUNT; i++) {
+        vertex_x_cache[i] = (int16_t)(m2_vertices[i].x >> 16);
+        vertex_y_cache[i] = (int16_t)(m2_vertices[i].y >> 16);
+    }
 }
 
 static int16_t clamp_i16(int16_t value, int16_t lo, int16_t hi) {
@@ -167,10 +186,19 @@ static uint16_t scb3_yfield_from_top(int16_t top) {
 
 static void copy_profile_to_mirror(void) {
     volatile uint16_t *dst = (volatile uint16_t *)PROFILE_MIRROR_ADDR;
-    const uint16_t *src = (const uint16_t *)&profile;
-    for (uint16_t i = 0; i < sizeof(profile) / sizeof(uint16_t); i++) {
-        dst[i] = src[i];
-    }
+
+    dst[0] = profile.frame_id;
+    dst[1] = profile.game_ticks;
+    dst[2] = profile.render_ticks;
+    dst[3] = profile.upload_ticks;
+    dst[4] = profile.sprites_emitted;
+    dst[5] = profile.max_sprites_scanline;
+    dst[6] = profile.scb1_words;
+    dst[7] = profile.scb_control_words;
+    dst[8] = profile.fix_words;
+    dst[9] = profile.palette_words;
+    dst[10] = profile.ram_high_water_bytes;
+    dst[11] = profile.degrade_flags;
 }
 
 static uint32_t current_stack_pointer(void) {
@@ -237,7 +265,7 @@ static void init_palettes(void) {
     static const uint16_t clut[80] = {
         0x8000, 0x0fff, 0x0555, 0x0f00, 0x00f0, 0x000f, 0x0ff0, 0x0f0f,
         0x00ff, 0x0222, 0x0444, 0x0666, 0x0888, 0x0aaa, 0x0ccc, 0x0eee,
-        0x0000, 0x0eed, 0x0556, 0x0b33, 0x0ea4, 0x0596, 0x048b, 0x085a,
+        0x0000, 0x0eed, 0x0556, 0x0b33, 0x0ea4, 0x0596, 0x048b, 0x0765,
         0x0dd8, 0x0223, 0x0643, 0x0853, 0x0b74, 0x0575, 0x0478, 0x0eeb,
         0x0000, 0x0002, 0x0014, 0x0026, 0x0038, 0x004a, 0x005c, 0x006e,
         0x008f, 0x028f, 0x048f, 0x068f, 0x089f, 0x0aaf, 0x0ccf, 0x0fff,
@@ -249,7 +277,9 @@ static void init_palettes(void) {
     for (uint16_t i = 0; i < 80; i++) {
         MMAP_PALBANK1[i] = clut[i];
     }
-    MMAP_PALBANK1[255] = 0x0001;
+    MMAP_PALBANK1[255] = 0x0333;
+    palette_words_resident = 81u;
+    profile.palette_words = palette_words_resident;
 }
 
 static void reset_state(void) {
@@ -337,6 +367,18 @@ static void try_move(int16_t dx, int16_t dy) {
     }
 }
 
+static void try_move_demo(int16_t dx, int16_t dy) {
+    int16_t nx = player.x + dx;
+    int16_t ny = player.y + dy;
+
+    if (nx >= M2_BOUNDS_MIN_X - 64 && nx <= M2_BOUNDS_MAX_X + 64) {
+        player.x = nx;
+    }
+    if (ny >= M2_BOUNDS_MIN_Y - 64 && ny <= M2_BOUNDS_MAX_Y + 64) {
+        player.y = ny;
+    }
+}
+
 static uint8_t manual_input_active(void) {
     uint16_t held = bios_p1current & (CNT_UP | CNT_DOWN | CNT_LEFT | CNT_RIGHT | CNT_A | CNT_B);
     uint16_t changed = bios_p1change & CNT_D;
@@ -359,14 +401,14 @@ static void update_auto_demo(void) {
             player.angle = (uint8_t)((player.angle + 1u) & 63u);
         }
     } else if (phase < 360) {
-        try_move((int16_t)((fx * MOVE_STEP) >> 8), (int16_t)((fy * MOVE_STEP) >> 8));
+        try_move_demo((int16_t)((fx * MOVE_STEP) >> 8), (int16_t)((fy * MOVE_STEP) >> 8));
     } else if (phase < 560) {
         if ((phase & 7u) == 0) {
             player.angle = (uint8_t)((player.angle - 1u) & 63u);
         }
-        try_move((int16_t)((rx * STRAFE_STEP) >> 8), (int16_t)((ry * STRAFE_STEP) >> 8));
+        try_move_demo((int16_t)((rx * STRAFE_STEP) >> 8), (int16_t)((ry * STRAFE_STEP) >> 8));
     } else if (phase < 760) {
-        try_move((int16_t)(-((fx * MOVE_STEP) >> 8)), (int16_t)(-((fy * MOVE_STEP) >> 8)));
+        try_move_demo((int16_t)(-((fx * MOVE_STEP) >> 8)), (int16_t)(-((fy * MOVE_STEP) >> 8)));
     } else {
         if ((phase & 3u) == 0) {
             player.angle = (uint8_t)((player.angle + 1u) & 63u);
@@ -429,19 +471,13 @@ static uint8_t bucket_for_x(int16_t x) {
 }
 
 static uint8_t bucket_occluded(int16_t x, uint16_t depth) {
-    uint8_t bucket = bucket_for_x(x);
-    if (!bucket_filled[bucket]) {
-        return 0;
-    }
-    return (uint8_t)(depth > bucket_depth[bucket] + 16u);
+    (void)x;
+    (void)depth;
+    return 0;
 }
 
 static uint8_t bbox_visible(const int16_t bbox[4]) {
     enum { BBOX_TOP = 0, BBOX_BOTTOM = 1, BBOX_LEFT = 2, BBOX_RIGHT = 3 };
-    int16_t c = cos_q8(player.angle);
-    int16_t s = sin_q8(player.angle);
-    int16_t right_x = -s;
-    int16_t right_y = c;
     int16_t xs[4] = { bbox[BBOX_LEFT], bbox[BBOX_RIGHT], bbox[BBOX_LEFT], bbox[BBOX_RIGHT] };
     int16_t ys[4] = { bbox[BBOX_TOP], bbox[BBOX_TOP], bbox[BBOX_BOTTOM], bbox[BBOX_BOTTOM] };
     int16_t min_x = SCREEN_W + FRUSTUM_MARGIN_PX;
@@ -456,14 +492,14 @@ static uint8_t bbox_visible(const int16_t bbox[4]) {
     for (uint8_t i = 0; i < 4; i++) {
         int32_t dx = xs[i] - player.x;
         int32_t dy = ys[i] - player.y;
-        int32_t z = (dx * c + dy * s) >> 8;
+        int32_t z = (dx * view_cos_q8 + dy * view_sin_q8) >> 8;
         int32_t side;
         int16_t projected_x;
         if (z <= NEAR_Z) {
             continue;
         }
         front_corners++;
-        side = (dx * right_x + dy * right_y) >> 8;
+        side = (dx * view_right_x_q8 + dy * view_right_y_q8) >> 8;
         projected_x = (int16_t)(SCREEN_W / 2 + (side * FOCAL) / z);
         if (projected_x < min_x) min_x = projected_x;
         if (projected_x > max_x) max_x = projected_x;
@@ -483,12 +519,56 @@ static void mark_bucket(int16_t x, uint16_t depth) {
     }
 }
 
+static void commit_cmd(sprite_cmd_t cmd) {
+    cmds[cmd_count++] = cmd;
+    role_counts[cmd.role]++;
+    mark_bucket(cmd.x, cmd.depth);
+}
+
+static uint8_t farthest_replacement_slot(const sprite_cmd_t *cmd, uint8_t *slot) {
+    uint8_t found = 0;
+    uint16_t farthest_depth = 0;
+
+    for (uint8_t i = 0; i < cmd_count; i++) {
+        if (!found || cmds[i].depth > farthest_depth) {
+            found = 1;
+            farthest_depth = cmds[i].depth;
+            *slot = i;
+        }
+    }
+    return (uint8_t)(found && cmd->depth < farthest_depth);
+}
+
+static void replace_cmd(uint8_t slot, sprite_cmd_t cmd) {
+    uint8_t old_role = cmds[slot].role;
+    if (old_role < 3u && role_counts[old_role] > 0) {
+        role_counts[old_role]--;
+    }
+    cmds[slot] = cmd;
+    role_counts[cmd.role]++;
+    mark_bucket(cmd.x, cmd.depth);
+    pass_budget_replaced = 1;
+}
+
 static void add_cmd(sprite_cmd_t cmd) {
+    if (cmd_count < TARGET_SPRITES) {
+        commit_cmd(cmd);
+        return;
+    }
+
+    pass_budget_dropped = 1;
+    if (cmd_count < MAX_CMDS) {
+        uint8_t slot = 0;
+        if (farthest_replacement_slot(&cmd, &slot)) {
+            replace_cmd(slot, cmd);
+        }
+        return;
+    }
+
     if (cmd_count >= MAX_CMDS) {
         pass_overflow = 1;
         return;
     }
-    cmds[cmd_count++] = cmd;
 }
 
 static uint16_t select_wall_card(uint16_t texture_id, uint16_t u_offset, uint16_t depth) {
@@ -508,6 +588,9 @@ static uint16_t select_wall_card(uint16_t texture_id, uint16_t u_offset, uint16_
     }
     if (global_lod >= 2u || depth > TEXTURE_COARSE_Z) {
         shift = 5u;
+    }
+    if (global_lod >= 4u || depth > FAMILY_TEXTURE_Z) {
+        shift = 6u;
     }
     return (uint16_t)(base + (((uint16_t)(u_offset >> shift)) % count));
 }
@@ -547,28 +630,18 @@ static void emit_chunk(uint16_t texture_id, wall_role_t role, int16_t x, int16_t
     cmd.width = width;
     cmd.x_shrink = (uint8_t)(width >= 16 ? 0x0f : (width - 1u));
     cmd.y_shrink = y_shrink_for_height(height);
-    cmd.size_tiles = (uint8_t)((height + 15u) / 16u);
-    if (cmd.size_tiles == 0) cmd.size_tiles = 1;
-    if (cmd.size_tiles > CARD_TILE_COUNT) cmd.size_tiles = CARD_TILE_COUNT;
+    cmd.size_tiles = CARD_TILE_COUNT;
     cmd.role = (uint8_t)role;
-    if (cmd_count < MAX_CMDS) {
-        role_counts[(uint8_t)role]++;
-        mark_bucket(x, depth);
-    }
     add_cmd(cmd);
 }
 
 static void emit_wall_role(uint16_t texture_id, int16_t texture_xoff, int16_t seg_offset, uint16_t wall_length, uint16_t v0_index, uint16_t v1_index, wall_role_t role, int16_t floor, int16_t ceil) {
-    int16_t c = cos_q8(player.angle);
-    int16_t s = sin_q8(player.angle);
-    int16_t right_x = -s;
-    int16_t right_y = c;
     int32_t dx0 = vertex_x(v0_index) - player.x;
     int32_t dy0 = vertex_y(v0_index) - player.y;
     int32_t dx1 = vertex_x(v1_index) - player.x;
     int32_t dy1 = vertex_y(v1_index) - player.y;
-    int32_t z0 = (dx0 * c + dy0 * s) >> 8;
-    int32_t z1 = (dx1 * c + dy1 * s) >> 8;
+    int32_t z0 = (dx0 * view_cos_q8 + dy0 * view_sin_q8) >> 8;
+    int32_t z1 = (dx1 * view_cos_q8 + dy1 * view_sin_q8) >> 8;
     int32_t side0;
     int32_t side1;
     int32_t u0;
@@ -585,8 +658,9 @@ static void emit_wall_role(uint16_t texture_id, int16_t texture_xoff, int16_t se
     int32_t u_right;
     int32_t u_acc;
     int32_t u_step;
-    int16_t top;
-    int16_t bot;
+    int32_t z_left;
+    int32_t z_right;
+    int32_t z_span;
 
     if (ceil <= floor || (z0 <= NEAR_Z && z1 <= NEAR_Z)) {
         return;
@@ -595,8 +669,8 @@ static void emit_wall_role(uint16_t texture_id, int16_t texture_xoff, int16_t se
         wall_length = 1;
     }
 
-    side0 = ((dx0 * right_x + dy0 * right_y) >> 8);
-    side1 = ((dx1 * right_x + dy1 * right_y) >> 8);
+    side0 = ((dx0 * view_right_x_q8 + dy0 * view_right_y_q8) >> 8);
+    side1 = ((dx1 * view_right_x_q8 + dy1 * view_right_y_q8) >> 8);
     u0 = ((int32_t)texture_xoff + (int32_t)seg_offset) << 8;
     u1 = u0 + ((int32_t)wall_length << 8);
 
@@ -620,11 +694,15 @@ static void emit_wall_role(uint16_t texture_id, int16_t texture_xoff, int16_t se
         unclipped_right = x1;
         u_left = u0;
         u_right = u1;
+        z_left = z0;
+        z_right = z1;
     } else {
         unclipped_left = x1;
         unclipped_right = x0;
         u_left = u1;
         u_right = u0;
+        z_left = z1;
+        z_right = z0;
     }
     if (unclipped_right < 0 || unclipped_left >= SCREEN_W) {
         return;
@@ -635,28 +713,39 @@ static void emit_wall_role(uint16_t texture_id, int16_t texture_xoff, int16_t se
         return;
     }
 
-    depth = (uint16_t)((z0 + z1) / 2);
-    if (depth < NEAR_Z) {
-        depth = NEAR_Z;
-    }
-    top = (int16_t)(HORIZON_Y - (((int32_t)(ceil - PLAYER_EYE) * PROJ_SCALE) / depth));
-    bot = (int16_t)(HORIZON_Y - (((int32_t)(floor - PLAYER_EYE) * PROJ_SCALE) / depth));
-    if (bot <= top) {
-        return;
-    }
-
     screen_span = (int32_t)unclipped_right - unclipped_left;
     if (screen_span <= 0) {
         return;
     }
+    z_span = z_right - z_left;
     u_step = (u_right - u_left) / screen_span;
     if (u_step == 0 && u_right != u_left) {
         u_step = (u_right > u_left) ? 1 : -1;
     }
     u_acc = u_left + u_step * ((int32_t)left - unclipped_left);
     for (int16_t x = left; x < right; x += WALL_STRIP_WIDTH) {
-        uint8_t width = (uint8_t)((right - x) >= (int16_t)WALL_STRIP_WIDTH ? WALL_STRIP_WIDTH : (right - x));
-        emit_chunk(texture_id, role, x, top, (uint16_t)(bot - top), depth, width, (uint16_t)(u_acc >> 8));
+        int16_t remaining = (int16_t)(right - x);
+        uint8_t width = remaining >= (int16_t)WALL_STRIP_WIDTH ? (uint8_t)WALL_STRIP_WIDTH : (uint8_t)remaining;
+        int32_t center = (int32_t)x + (width / 2) - unclipped_left;
+        int32_t chunk_z = z_left + (z_span * center) / screen_span;
+        int16_t top;
+        int16_t bot;
+
+        if (chunk_z < NEAR_Z) {
+            chunk_z = NEAR_Z;
+        }
+        if (chunk_z > 0xffff) {
+            chunk_z = 0xffff;
+        }
+        depth = (uint16_t)chunk_z;
+        top = (int16_t)(HORIZON_Y - (((int32_t)(ceil - PLAYER_EYE) * PROJ_SCALE) / depth));
+        bot = (int16_t)(HORIZON_Y - (((int32_t)(floor - PLAYER_EYE) * PROJ_SCALE) / depth));
+        if (bot > top) {
+            emit_chunk(texture_id, role, x, top, (uint16_t)(bot - top), depth, width, (uint16_t)(u_acc >> 8));
+        }
+        if (cmd_count >= TARGET_SPRITES && pass_budget_dropped) {
+            break;
+        }
         u_acc += u_step * width;
     }
 }
@@ -727,6 +816,9 @@ static void emit_subsector(uint16_t subsector_index) {
     subsector = &m2_subsectors[subsector_index];
     for (uint16_t i = 0; i < subsector->seg_count; i++) {
         emit_seg((uint16_t)(subsector->first_seg + i));
+        if (cmd_count >= TARGET_SPRITES && pass_budget_dropped) {
+            return;
+        }
     }
 }
 
@@ -754,6 +846,10 @@ static void traverse_node(uint16_t node_index, uint8_t depth) {
     } else {
         nodes_culled++;
     }
+    if (cmd_count >= TARGET_SPRITES && pass_budget_dropped) {
+        nodes_culled++;
+        return;
+    }
     if (bbox_visible(node->bbox[far_child])) {
         traverse_child(node->child[far_child], (uint8_t)(depth + 1u));
     } else {
@@ -770,39 +866,28 @@ static void traverse_child(uint16_t child, uint8_t depth) {
 }
 
 static void sort_cmds_back_to_front(void) {
-    for (uint8_t i = 1; i < cmd_count; i++) {
-        sprite_cmd_t key = cmds[i];
-        int8_t j = (int8_t)i - 1;
-        while (j >= 0 && cmds[(uint8_t)j].depth < key.depth) {
-            cmds[(uint8_t)(j + 1)] = cmds[(uint8_t)j];
-            j--;
-        }
-        cmds[(uint8_t)(j + 1)] = key;
+    uint8_t left = 0;
+    uint8_t right = cmd_count ? (uint8_t)(cmd_count - 1u) : 0u;
+
+    while (left < right) {
+        sprite_cmd_t tmp = cmds[left];
+        cmds[left] = cmds[right];
+        cmds[right] = tmp;
+        left++;
+        right--;
     }
 }
 
 static uint8_t compute_peak_scanline(void) {
-    uint8_t peak = 0;
-    for (uint16_t y = 0; y < SCREEN_H; y++) {
-        uint8_t count = 0;
-        for (uint8_t i = 0; i < cmd_count; i++) {
-            int16_t top = cmds[i].y;
-            int16_t bot = (int16_t)(cmds[i].y + cmds[i].height);
-            if ((int16_t)y >= top && (int16_t)y < bot) {
-                count++;
-            }
-        }
-        if (count > peak) {
-            peak = count;
-        }
-    }
-    return peak;
+    return cmd_count;
 }
 
 static void render_pass(void) {
     cmd_count = 0;
     guard_asserted = 0;
     pass_overflow = 0;
+    pass_budget_dropped = 0;
+    pass_budget_replaced = 0;
     segs_visited = 0;
     subsectors_visited = 0;
     nodes_visited = 0;
@@ -810,6 +895,10 @@ static void render_pass(void) {
     role_counts[ROLE_MIDDLE] = 0;
     role_counts[ROLE_UPPER] = 0;
     role_counts[ROLE_LOWER] = 0;
+    view_cos_q8 = cos_q8(player.angle);
+    view_sin_q8 = sin_q8(player.angle);
+    view_right_x_q8 = (int16_t)-view_sin_q8;
+    view_right_y_q8 = view_cos_q8;
     bucket_size = lod_bucket_sizes[global_lod];
     reset_occlusion();
     if (M2_NODE_COUNT) {
@@ -820,23 +909,27 @@ static void render_pass(void) {
         }
     }
     sort_cmds_back_to_front();
-    profile.sprites_emitted = cmd_count;
-    profile.max_sprites_scanline = compute_peak_scanline();
+    profile.sprites_emitted = (uint16_t)cmd_count + BG_SPRITE_COUNT;
+    profile.max_sprites_scanline = (uint16_t)compute_peak_scanline() + BG_SPRITE_COUNT;
 }
 
 static void render_scene(void) {
     uint8_t selected_lod = RENDER_PASS_COUNT - 1u;
     uint8_t selected_overflow = 0;
+    uint8_t selected_budget_dropped = 0;
+    uint8_t selected_budget_replaced = 0;
     for (global_lod = 0; global_lod < RENDER_PASS_COUNT; global_lod++) {
         render_pass();
         selected_lod = global_lod;
         selected_overflow = pass_overflow;
-        if (!pass_overflow && profile.sprites_emitted <= TARGET_SPRITES && profile.max_sprites_scanline <= TARGET_PEAK) {
+        selected_budget_dropped = pass_budget_dropped;
+        selected_budget_replaced = pass_budget_replaced;
+        if (!pass_overflow && profile.sprites_emitted <= TARGET_TOTAL_SPRITES && profile.max_sprites_scanline <= TARGET_PEAK) {
             break;
         }
     }
     global_lod = selected_lod;
-    if (global_lod > 0) {
+    if (global_lod > 0 || selected_budget_dropped || selected_budget_replaced) {
         profile.degrade_flags |= NG_DEGRADE_MERGED_WALLS;
     }
     if (selected_overflow || profile.max_sprites_scanline > 96u || profile.sprites_emitted >= MAX_CMDS) {
@@ -851,7 +944,7 @@ static void write_tilemap(uint16_t sprite, uint16_t card_id) {
     *REG_VRAMMOD = 1;
     *REG_VRAMADDR = ADDR_SCB1 + (sprite * 64u);
     for (uint16_t i = 0; i < CARD_TILE_COUNT; i++) {
-        *REG_VRAMRW = CARD_START_TILE + card_id * CARD_TILE_COUNT + (i & 31u);
+        *REG_VRAMRW = CARD_START_TILE + (i * M2_WALL_CARD_COUNT) + card_id;
         *REG_VRAMRW = 1u << 8;
     }
     profile.scb1_words += CARD_TILE_COUNT * 2u;
@@ -862,6 +955,28 @@ static void preload_wall_tilemaps(void) {
         write_tilemap(SPRITE_BASE + i, 0);
         shadow_card_id[i] = 0;
         shadow_valid[i] = 1;
+    }
+}
+
+static void init_background_sprites(void) {
+    uint16_t y_shrink = y_shrink_for_height(SCREEN_H);
+
+    for (uint8_t i = 0; i < BG_SPRITE_COUNT; i++) {
+        write_tilemap((uint16_t)(BG_SPRITE_BASE + i), 0);
+    }
+
+    *REG_VRAMMOD = 1;
+    *REG_VRAMADDR = ADDR_SCB2 + BG_SPRITE_BASE;
+    for (uint8_t i = 0; i < BG_SPRITE_COUNT; i++) {
+        *REG_VRAMRW = (uint16_t)((0x0fu << 8) | y_shrink);
+    }
+    *REG_VRAMADDR = ADDR_SCB3 + BG_SPRITE_BASE;
+    for (uint8_t i = 0; i < BG_SPRITE_COUNT; i++) {
+        *REG_VRAMRW = (uint16_t)((scb3_yfield_from_top(0) << 7) | CARD_TILE_COUNT);
+    }
+    *REG_VRAMADDR = ADDR_SCB4 + BG_SPRITE_BASE;
+    for (uint8_t i = 0; i < BG_SPRITE_COUNT; i++) {
+        *REG_VRAMRW = (uint16_t)(((uint16_t)(i * WALL_STRIP_WIDTH)) << 7);
     }
 }
 
@@ -903,7 +1018,10 @@ static void upload_scene(void) {
                 } else {
                     scb1_deferred++;
                     visible = 0;
-                    profile.degrade_flags |= NG_DEGRADE_PANIC_CHUNKS;
+                    profile.degrade_flags |= NG_DEGRADE_MERGED_WALLS;
+                    if (!shadow_valid[i]) {
+                        profile.degrade_flags |= NG_DEGRADE_PANIC_CHUNKS;
+                    }
                 }
             }
             if (visible) {
@@ -956,7 +1074,7 @@ static void update_max_metrics(uint16_t scb_words, uint16_t fit_frames) {
 }
 
 static void draw_overlay(uint16_t scb_words, uint16_t fit_frames) {
-    char line[38];
+    char line[48];
 
     put_overlay_line(1, "DOOM AES M2 E1M1 WALLS");
     snprintf(line, sizeof(line), "DEMO %-6s DPAD TAKES OVER", demo_label());
@@ -980,9 +1098,11 @@ static void draw_overlay(uint16_t scb_words, uint16_t fit_frames) {
 int main(void) {
     ng_cls();
     reset_state();
+    init_geometry_cache();
     ng_profile_reset(&profile, frame_id);
     init_palettes();
     bios_lsp_1st();
+    init_background_sprites();
     preload_wall_tilemaps();
     ram_high_water_bytes = 0;
 
@@ -991,6 +1111,7 @@ int main(void) {
         uint16_t fit_frames;
         ng_wait_vblank();
         ng_profile_reset(&profile, frame_id++);
+        profile.palette_words = palette_words_resident;
         update_ram_high_water();
 
         update_controls();

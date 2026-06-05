@@ -58,7 +58,12 @@ def sidedef_lump(sector: int = 0) -> bytes:
     return struct.pack("<hh8s8s8sh", 0, 0, b"-\0", b"-\0", b"STARTAN3", sector)
 
 
-def make_wad(path: Path, texture_patch_index: int = 0) -> None:
+def make_wad(
+    path: Path,
+    texture_patch_index: int = 0,
+    bad_seg_vertex: bool = False,
+    bad_sidedef_sector: bool = False,
+) -> None:
     things = struct.pack("<hhhhh", 128, 64, 90, 1, 7)
     vertices = b"".join(
         struct.pack("<hh", x, y)
@@ -73,10 +78,10 @@ def make_wad(path: Path, texture_patch_index: int = 0) -> None:
         struct.pack("<hhhhhhh", v1, v2, 0, 0, 0, side, -1)
         for side, (v1, v2) in enumerate(((0, 1), (1, 2), (2, 3), (3, 0)))
     )
-    sidedefs = b"".join(sidedef_lump() for _ in range(4))
+    sidedefs = b"".join(sidedef_lump(9 if bad_sidedef_sector and i == 0 else 0) for i in range(4))
     sectors = sector_lump()
     segs = b"".join(
-        struct.pack("<hhhhhh", v1, v2, 0, line, 0, 0)
+        struct.pack("<hhhhhh", v1, 99 if bad_seg_vertex and line == 0 else v2, 0, line, 0, 0)
         for line, (v1, v2) in enumerate(((0, 1), (1, 2), (2, 3), (3, 0)))
     )
     ssectors = struct.pack("<HH", 4, 0)
@@ -161,12 +166,13 @@ def main() -> int:
     assert (out / "e1m1_map_preview.svg").exists()
     atlas_report = json.loads((out / "e1m1_wall_atlas_report.json").read_text())
     assert atlas_report["texture_count"] == 1
-    assert atlas_report["cards"] == 4
+    assert atlas_report["cards"] == 5
+    assert atlas_report["background_card"] == 0
     assert atlas_report["textures"][0]["card_count"] == 4
     assert atlas_report["missing_textures"] == []
     assert (out / "e1m1_wall_cards.gif").exists()
     wall_header_text = (out / "e1m1_wall_cards.h").read_text()
-    assert "#define M2_WALL_CARD_COUNT 4u" in wall_header_text
+    assert "#define M2_WALL_CARD_COUNT 5u" in wall_header_text
 
     bad_wad_path = root / "BAD_PATCH.WAD"
     bad_out = root / "bad_out"
@@ -180,6 +186,32 @@ def main() -> int:
         assert "invalid PNAMES index 7" in str(exc)
     else:
         raise AssertionError("invalid texture patch index did not fail wall atlas compilation")
+
+    bad_map_path = root / "BAD_MAP_REF.WAD"
+    bad_map_out = root / "bad_map_out"
+    make_wad(bad_map_path, bad_seg_vertex=True)
+    bad_map_args = Args()
+    bad_map_args.wad = str(bad_map_path)
+    bad_map_args.out = str(bad_map_out)
+    try:
+        command_compile_map(bad_map_args)
+    except ValueError as exc:
+        assert "SEGS[0].v2 index 99" in str(exc)
+    else:
+        raise AssertionError("invalid seg vertex did not fail map compilation")
+
+    bad_sector_path = root / "BAD_SIDEDEF_SECTOR.WAD"
+    bad_sector_out = root / "bad_sector_out"
+    make_wad(bad_sector_path, bad_sidedef_sector=True)
+    bad_sector_args = Args()
+    bad_sector_args.wad = str(bad_sector_path)
+    bad_sector_args.out = str(bad_sector_out)
+    try:
+        command_compile_map(bad_sector_args)
+    except ValueError as exc:
+        assert "SIDEDEFS[0].sector index 9" in str(exc)
+    else:
+        raise AssertionError("invalid sidedef sector did not fail map compilation")
 
     print("synthetic wad2ng map compile test passed")
     return 0

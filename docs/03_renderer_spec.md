@@ -108,6 +108,20 @@ guard                  = keep the card's bottom line transparent so the
                          hardware "last-line repeat" smear is invisible
 ```
 
+**DECISION (was previously unpinned — pin it):** use the dynamic-window convention above
+(`size_tiles = clamp(ceil(projected_wall_px / 16), 1, CARD_TILE_COUNT)`), **and** bake a
+transparent guard line into every wall card as a belt-and-suspenders against sub-tile
+rounding leftovers. Do both, not one. Milestone 1 already implements the dynamic window
+correctly; the emitter for every later milestone must match it.
+
+> **Known regression (M2, 2026-06-04):** `experiments/milestone2_e1m1_walls/main.c` sets
+> `size_tiles = CARD_TILE_COUNT` (a fixed 256px window) for *every* wall and varies only
+> `y_shrink`. Per the hardware (`references/.../Sprite_shrinking.md`: window taller than
+> shrunk graphics → last-line-repeat smear), and because `texture_card()` does not emit a
+> transparent guard line, this produces the "green/white vertical garbage" on short/far/steep
+> walls. This is THE corruption bug, not a cosmetic LOD artifact. See
+> [14_renderer_diagnosis_and_optimal_path.md](14_renderer_diagnosis_and_optimal_path.md) §2.
+
 Vertical texture phase/pegging is quantized to the few precomputed phase variants. Expect minor swimming on moving doors/lifts; that is accepted.
 
 ## Chunk Width Rules

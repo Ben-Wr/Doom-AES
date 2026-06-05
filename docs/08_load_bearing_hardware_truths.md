@@ -182,6 +182,12 @@ Last-line repeat: when the window exceeds the shrunk graphics height, the leftov
 
 For walls: either size the window in whole tiles to match the projected height and Vshrink to fine-tune, or set the window to max and keep a transparent guard line. Vertical texture pegging/phase is quantized to a few precomputed card variants; expect minor swimming on moving doors/lifts. Document the chosen convention before writing the emitter.
 
+> This exact caveat bit M2: its emitter fixed the window at 16 tiles and varied only Vshrink,
+> with no guard line — producing the "green/white vertical garbage" on far/steep walls. It is
+> the load-bearing example of why this section exists. Diagnosis + the pinned convention:
+> [14_renderer_diagnosis_and_optimal_path.md](14_renderer_diagnosis_and_optimal_path.md) §2,
+> [03_renderer_spec.md](03_renderer_spec.md) "Vertical: window vs shrink".
+
 ## 9. The Baseline Atlas Is Smaller Than The Fancy Atlas
 
 ```text

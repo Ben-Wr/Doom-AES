@@ -10,7 +10,7 @@ parser = argparse.ArgumentParser(description="Estimate Neo Geo wall-card atlas C
 parser.add_argument("--materials", type=int, default=48)
 parser.add_argument("--cards-per-material", type=int, default=8)
 parser.add_argument("--phases", type=int, default=4)
-parser.add_argument("--bytes-per-card", type=int, default=4096)
+parser.add_argument("--bytes-per-card", type=int, default=2048)
 parser.add_argument("--extra-percent", type=float, default=10.0, help="metadata/alignment/special-card padding")
 args = parser.parse_args()
 

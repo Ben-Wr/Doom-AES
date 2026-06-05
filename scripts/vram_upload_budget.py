@@ -13,7 +13,8 @@ Grounded in references/neogeodev/md/VRAM.md and Display_timing.md:
     mclk each = ~61,440 mclk = ~2.56 ms = ~30,720 CPU cycles at 12 MHz.
 
 The load-bearing fact this script exists to make obvious: an SCB1 tilemap is up
-to 64 words per sprite (32 tiles * 2 words). Rewriting every wall sprite's
+to 64 words per 32-tile sprite, and 32 words for the current 16-tile M2 wall
+card convention. Rewriting every wall sprite's
 tilemap every frame does NOT fit in vblank. The renderer survives only by
 caching tilemaps and rewriting SCB1 ONLY for sprites whose card id changed this
 frame (--wall-card-change-frac). Unchanged sprites pay just control words.
@@ -29,7 +30,7 @@ parser.add_argument("--cycles-per-word", type=int, default=12, help="streamed wr
 parser.add_argument("--practical-fill", type=float, default=0.65, help="M0B-calibrated fraction of theoretical writes to trust (loop overhead, address sets, zone crossings)")
 parser.add_argument("--wall-sprites", type=int, default=40, help="visible wall chunks crossing the center scanline")
 parser.add_argument("--thing-sprites", type=int, default=24, help="thing/weapon strips crossing center")
-parser.add_argument("--wall-height-tiles", type=int, default=32, help="SCB1 tilemap words = 2 * this when a card changes")
+parser.add_argument("--wall-height-tiles", type=int, default=16, help="SCB1 tilemap words = 2 * this when a card changes")
 parser.add_argument("--thing-height-tiles", type=int, default=12)
 parser.add_argument("--control-words-per-sprite", type=int, default=3, help="SCB2 shrink + SCB3 Y/size + SCB4 X")
 parser.add_argument("--wall-card-change-frac", type=float, default=0.25,
